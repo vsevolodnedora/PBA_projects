@@ -47,18 +47,22 @@ class ProcessRaw():
         self.sim = simumlation
         self.dfile = None
 
-    def process_raw_ejecta_files(self, infiles : str = "ejecta_*.h5", fname_output : str = "ej_collated.h5", mode:str="mass"):
+    def process_raw_ejecta_files(self, infiles : str = "ejecta_*.h5", fname_output : str = "ej_collated.h5",
+                                 mode:str="mass", overwrite:bool=False) -> None:
         # dir = "/media/vsevolod/T7/work/KentaData/"
         # simname = "SFHoTim276_12_15_0025_150mstg_B0_HLLC" + "/"
         name = self.sim["name"]
         datadir = self.sim["datadir"]
+        collated_ej_data_fpath = datadir + fname_output
+        # skip if file exists and no overwrite option set
+        if (os.path.isfile(collated_ej_data_fpath)and(not overwrite)):
+            return None
         if (not os.path.isdir(datadir)):
             raise FileNotFoundError(f"Datadir for {name} is not found Looking for {datadir}")
         files = glob(datadir + infiles)
         if (len(files) == 0):
             raise FileNotFoundError(f"Files {infiles} not found in {datadir}")
         id = PBA.id_kenta.ProcessRawFiles(files=files, verbose=True, mode=mode)
-        collated_ej_data_fpath = datadir + fname_output
         id.process_save(collated_ej_data_fpath)
 
     def getProcessed(self, fname_output : str = "ej_collated.h5") -> h5py.File:
@@ -86,6 +90,12 @@ def process(sim : dict) -> None:
 
 
 def main():
+
+    ej = ProcessRaw(simumlation = SIMULATIONS["SFHo_12_15_res150_B15_HLLD"])
+    ej.process_raw_ejecta_files(infiles="Mdot_ejecta_*.h5", fname_output="mdot_ej_collated.h5", mode="mdot",overwrite=True)
+
+    exit(1);
+
 
     sim_dic = SIMULATIONS["SFHo_13_14_res150"]
     pr = ProcessRaw(simumlation=sim_dic)

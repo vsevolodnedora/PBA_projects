@@ -34,7 +34,6 @@ from sklearn import clone
 from rfpimp import plot_corr_heatmap, feature_corr_matrix
 from scipy.stats import spearmanr
 
-
 color_pal = sns.color_palette()
 plt.style.use("fivethirtyeight")
 
@@ -102,7 +101,8 @@ class DataSimulationRuns():
 
 class StatAnalysis():
 
-    def __init__(self, df : pd.DataFrame, features : list[str]):
+    def __init__(self, df : pd.DataFrame,
+                 features : list[str]):
         self.df = df
         self.features = features
 
