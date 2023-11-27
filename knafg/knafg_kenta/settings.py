@@ -22,7 +22,7 @@ SIMULATIONS = {
         "idx":1,
         "name":"SFHoTim276_13_14_0025_150mstg_B0_HLLC",
         "datadir":DATADIR+"SFHoTim276_13_14_0025_150mstg_B0_HLLC"+"/",
-        "tmerg":None,           # TODO FILL IT
+        "tmerg":15.,#None,           # TODO FILL IT
         "mdot_extract":"Mdot_extraction_SFHo_13_14.txt",
         "rhomax":"rhomax_SFHo_13_14.txt",
         "EOS":"SFHo",
@@ -95,7 +95,7 @@ SIMULATIONS = {
         "name":"SFHoTim276_12_15_0025_150mstg_B15_HLLD_CT_GS_onFugaku",
         "datadir":DATADIR+"SFHoTim276_12_15_0025_150mstg_B15_HLLD_CT_GS_onFugaku"+"/",
         "EOS":"SFHo",
-        "tmerg":None,           # TODO FILL IT
+        "tmerg":15.,#None,           # TODO FILL IT
         "mdot_extract":"Mdot_extraction_SFHo_12_15.txt",
         "rhomax":"max_SFHo_12_15.txt",
         "q":1.25,
