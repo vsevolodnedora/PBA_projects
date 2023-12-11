@@ -3,8 +3,22 @@ from paths import *
 
 SIMULATIONS = {
     #### =========== SFHo ================
-    "SFHo_135_135_res150" : {
+    "SFHo_135_135_res150_new" : {
         "idx":0,
+        "name":"SFHoTim276_135_135_45km_150mstg_B0_FUKA",
+        "datadir":DATADIR+"SFHoTim276_135_135_45km_150mstg_B0_FUKA"+"/",
+        "tmerg":17.2,
+        "mdot_extract":"Mdot_extraction_SFHo_135_135.txt",
+        "rhomax":"max_SFHo_135_135.txt",
+        "EOS":"SFHo",
+        "q":1.,
+        "res":150,
+        "given_time":"new",
+        "given_date":"12/11/2023",
+        "label":r"SFHo (1.35-1.35)$M_{\odot}$ (150m)"
+    },
+    "SFHo_135_135_res150" : {
+        "idx":1,
         "name":"SFHo_135_135_150m_11",
         "datadir":DATADIR+"SFHo_135_135_150m_11"+"/",
         "tmerg":14.9,
@@ -19,7 +33,7 @@ SIMULATIONS = {
     },
     # --------------------------
     "SFHo_13_14_res150" : {
-        "idx":1,
+        "idx":2,
         "name":"SFHoTim276_13_14_0025_150mstg_B0_HLLC",
         "datadir":DATADIR+"SFHoTim276_13_14_0025_150mstg_B0_HLLC"+"/",
         "tmerg":15.,#None,           # TODO FILL IT
@@ -34,7 +48,7 @@ SIMULATIONS = {
     },
     # --------------------------
     "SFHo_125_145_res150" : {
-        "idx":2,
+        "idx":3,
         "name":"SFHo_125_145_150m_11",
         "datadir":DATADIR+"SFHo_125_145_150m_11"+"/",
         "EOS":"SFHo",
@@ -48,7 +62,7 @@ SIMULATIONS = {
         "label":"SFHo (1.25-1.45)$M_{\odot}$ (150m)"
     },
     "SFHo_125_145_res200" : {
-        "idx":3,
+        "idx":4,
         "name":"SFHoTim276_125_145_0025_200mstg_B0_HLLC",
         "datadir":DATADIR+"SFHoTim276_125_145_0025_200mstg_B0_HLLC"+"/",
         "EOS":"SFHo",
@@ -63,7 +77,7 @@ SIMULATIONS = {
     },
     # --------------------------
     "SFHo_12_15_res150" : {
-        "idx":4,
+        "idx":5,
         "name":"SFHoTim276_12_15_0025_150mstg_B0_HLLC",
         "datadir":DATADIR+"SFHoTim276_12_15_0025_150mstg_B0_HLLC"+"/",
         "EOS":"SFHo",
@@ -77,7 +91,7 @@ SIMULATIONS = {
         "label":"SFHo (1.2-1.5)$M_{\odot}$ (150m)"
     },
     "SFHo_12_15_res200" : {
-        "idx":5,
+        "idx":6,
         "name":"SFHo_12_15_200m_11",
         "datadir":DATADIR+"SFHo_12_15_200m_11"+"/",
         "EOS":"SFHo",
@@ -91,7 +105,7 @@ SIMULATIONS = {
         "label":r"SFHo (1.2-1.5)$M_{\odot}$ (200m)"
     },
     "SFHo_12_15_res150_B15_HLLD":{
-        "idx":6,
+        "idx":7,
         "name":"SFHoTim276_12_15_0025_150mstg_B15_HLLD_CT_GS_onFugaku",
         "datadir":DATADIR+"SFHoTim276_12_15_0025_150mstg_B15_HLLD_CT_GS_onFugaku"+"/",
         "EOS":"SFHo",
@@ -106,7 +120,7 @@ SIMULATIONS = {
     },
     #### =========== BHBlp ================
     "BHBLp_135_135_res150" : {
-        "idx":7,
+        "idx":8,
         "name":"BHBLpTim326_135_135_45km_150mstg_B0_HLLC",
         "datadir":DATADIR+"BHBLpTim326_135_135_45km_150mstg_B0_HLLC"+"/",
         "EOS":"BHBLp",
