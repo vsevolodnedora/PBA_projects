@@ -134,6 +134,24 @@ SIMULATIONS = {
         "given_date":"10/11/2023",
         "label":"BHBLp (1.35-1.35)$M_{\odot}$ (150m)"
     },
+    #### =========== BHBlp ================
+    "DD2_135_135_res150" : {
+        "idx":9,
+        "name":"DD2Tim326_135_135_0028_12.5mstg_B15.5_HLLD_CT_GS",
+        "datadir":DATADIR+"DD2Tim326_135_135_0028_12.5mstg_B15.5_HLLD_CT_GS"+"/",
+        "EOS":"DD2",
+        "tmerg":8.4,         # ms
+        # "mdot_extract":"Mdot_extraction_BHBLp_135_135.txt",
+        "mdot_extract":"Mdot_extraction_DD2_135_135.txt",
+        "rhomax":"max_DD2_135_135.txt",
+        "q":1.,
+        "res":150,
+        "given_time":"new",
+        "given_date":"12/13/2023",
+        "label":"DD2$^*$ (1.35-1.35)$M_{\odot}$ (150m)"
+    },
 }
+
+
 
 SIMS = pd.DataFrame.from_dict(SIMULATIONS).T
