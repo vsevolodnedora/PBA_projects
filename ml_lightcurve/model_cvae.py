@@ -26,18 +26,21 @@ class CVAE(nn.Module):
         :param y: Images/spectra
         :return: Mean returned by decoder, mean returned by encoder, log variance returned by encoder
         """
+
+        print("1")
         y = torch.cat((y, x), dim=1)
         mean, logvar = self.encoder(y)
-
+        print("2")
         # re-parametrize
         std = torch.exp(0.5 * logvar)
         eps = torch.randn_like(std)
         sample = mean + eps * std
-
+        print("3")
         z = torch.cat((sample, x), dim=1)
+        print("4")
         mean_dec = self.decoder(z)
-
-        return mean_dec, mean, logvar
+        print("5")
+        return (mean_dec, mean, logvar, z)
 
 class Encoder(nn.Module):
     """
