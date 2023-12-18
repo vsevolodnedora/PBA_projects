@@ -6,19 +6,21 @@ class CVAE(nn.Module):
         Base pytorch cVAE class
     """
 
-    def __init__(self, image_size=1629, hidden_dim=500, z_dim=20, c=4):
+    def __init__(self, image_size=150, hidden_dim=50, z_dim=10, c=7):
         """
         :param image_size: Size of 1D "images" of data set i.e. spectrum size
         :param hidden_dim: Dimension of hidden layer
-        :param z_dim: Dimension of latent space
+        :param z_dim: Dimension of latent space (latent_units)
         :param c: Dimension of conditioning variables
         """
         super(CVAE, self).__init__()
         self.z_dim = z_dim
-        self.encoder = Encoder(image_size, hidden_dim, z_dim, c)
-        self.decoder = Decoder(image_size, hidden_dim, z_dim, c)
+        self.c = c
+        self.encoder = Encoder(image_size, hidden_dim, z_dim, c) # self.encoder = Encoder(latent_dims)
+        self.decoder = Decoder(image_size, hidden_dim, z_dim, c) # self.decoder = Decoder(latent_dims)
+        self.init_weights()
 
-    def forward(self, x, y):
+    def forward(self, y, x):
         """
         Compute one single pass through decoder and encoder
 
@@ -27,27 +29,43 @@ class CVAE(nn.Module):
         :return: Mean returned by decoder, mean returned by encoder, log variance returned by encoder
         """
 
-        print("1")
+        # print("1 x={} y={}".format(x.shape, y.shape))
         y = torch.cat((y, x), dim=1)
         mean, logvar = self.encoder(y)
-        print("2")
+        # print(f"2 y={y.shape}")
         # re-parametrize
         std = torch.exp(0.5 * logvar)
         eps = torch.randn_like(std)
         sample = mean + eps * std
-        print("3")
+        # print(f"3 sample={sample.shape}")
         z = torch.cat((sample, x), dim=1)
-        print("4")
+        # print(f"4 cat(sample,x) -> z={z.shape}")
         mean_dec = self.decoder(z)
-        print("5")
+        # print(f"5 mean_dec={mean_dec.shape}")
         return (mean_dec, mean, logvar, z)
+
+    def init_weights(self):
+        """
+            Initialize weight of recurrent layers
+        """
+        for name, param in self.encoder.named_parameters():
+            if 'bias' in name:
+                nn.init.normal_(param, 0.0)
+            elif 'weight' in name:
+                nn.init.xavier_normal_(param)
+        for name, param in self.decoder.named_parameters():
+            if 'bias' in name:
+                nn.init.normal_(param, 0.0)
+            elif 'weight' in name:
+                nn.init.xavier_normal_(param)
+
 
 class Encoder(nn.Module):
     """
     Encoder of the cVAE
     """
 
-    def __init__(self, image_size=1629, hidden_dim=500, z_dim=20, c=4):
+    def __init__(self, image_size=150, hidden_dim=50, z_dim=10, c=7):
         """
         :param image_size: Size of 1D "images" of data set i.e. spectrum size
         :param hidden_dim: Dimension of hidden layer
@@ -57,6 +75,7 @@ class Encoder(nn.Module):
         """
         super().__init__()
 
+        # nn.Linear(latent_dims, 512)
         self.layers_mu = nn.Sequential(
             nn.Linear(image_size + c, hidden_dim),
             nn.Tanh(),
@@ -84,12 +103,13 @@ class Encoder(nn.Module):
         logvar = self.layers_logvar(x)
         return mean, logvar
 
+
 class Decoder(nn.Module):
     """
     Decoder of cVAE
     """
 
-    def __init__(self, image_size=1629, hidden_dim=500, z_dim=20, c=4):
+    def __init__(self, image_size=150, hidden_dim=50, z_dim=10, c=7):
         super().__init__()
 
         self.layers = nn.Sequential(
