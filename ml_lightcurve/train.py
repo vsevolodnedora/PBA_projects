@@ -1,3 +1,17 @@
+"""
+# Create Neural Network
+
+### Primary Sources:
+- [Paper by Lukosiute](https://arxiv.org/pdf/2204.00285.pdf) with [GitHub code](https://github.com/klukosiute/kilonovanet) using [Bulla's data](https://github.com/mbulla/kilonova_models/tree/master/bns/bns_grids/bns_m3_3comp).
+- [PELS-VAE](https://github.com/jorgemarpa/PELS-VAE) github that had was used to draft train part for Lukosiute net ([data for it](https://zenodo.org/records/3820679#.XsW12RMzaRc))
+
+### Secondary Sources
+- [Tronto Autoencoder](https://www.cs.toronto.edu/~lczhang/aps360_20191/lec/w05/autoencoder.html) (Convolutional net)
+- [Video with derivations](https://www.youtube.com/watch?v=iwEzwTTalbg)
+- [Data sampling with scikit](https://machinelearningmastery.com/how-to-improve-neural-network-stability-and-modeling-performance-with-data-scaling/)
+- [Astro ML BOOK repo with code](https://github.com/astroML/astroML_figures/blob/742df9181f73e5c903ea0fd0894ad6af83099c96/book_figures/chapter9/fig_sdss_vae.py#L45)
+
+"""
 import numpy as np
 import h5py
 import os
@@ -506,6 +520,10 @@ def train_main(lr=0.1, batch_size=64):
     print(f"lcs={lcs.min()}, {lcs.max()}, pars={pars.min()} {pars.max()}, times={times.shape}")
     print(features_names)
 
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    if device.type == 'cuda':
+        torch.cuda.empty_cache()
+
 
     # init dataloaders for training
     dataset = LightCurveDataset(pars, lcs, times)
@@ -516,8 +534,9 @@ def train_main(lr=0.1, batch_size=64):
     # init model
     model = CVAE(image_size=len(lcs[0]),  #  150
                  hidden_dim=700,
-                 z_dim=len(pars[0])*4,
-                 c=len(pars[0]))
+                 z_dim=4 * len(features_names),
+                 c=len(features_names))
+    model.to(device)
 
     n_train_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
     print(f'Num of trainable params: {n_train_params}')
@@ -540,9 +559,6 @@ def train_main(lr=0.1, batch_size=64):
     print('Optimizer    :', optimizer)
     print('LR Scheduler :', scheduler.__class__.__name__)
 
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    if device.type == 'cuda':
-        torch.cuda.empty_cache()
 
 
     # initialize trainer
