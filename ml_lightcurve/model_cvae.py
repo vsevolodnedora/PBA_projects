@@ -6,6 +6,13 @@ class CVAE(nn.Module):
         Base pytorch cVAE class
     """
 
+    _parameter_constraints: dict = {
+        "image_size": ["int"],
+        "hidden_dim": ["int"],
+        "z_dim": ["int"],
+        "c":["int"]
+    }
+
     def __init__(self, image_size=150, hidden_dim=50, z_dim=10, c=7):
         """
         :param image_size: Size of 1D "images" of data set i.e. spectrum size
@@ -16,9 +23,19 @@ class CVAE(nn.Module):
         super(CVAE, self).__init__()
         self.z_dim = z_dim
         self.c = c
+        self.image_size=image_size
+        self.hidden_dim=hidden_dim
         self.encoder = Encoder(image_size, hidden_dim, z_dim, c) # self.encoder = Encoder(latent_dims)
         self.decoder = Decoder(image_size, hidden_dim, z_dim, c) # self.decoder = Decoder(latent_dims)
         self.init_weights()
+
+    @classmethod
+    def init_from_dict(cls, dict : dict):
+        for key in cls._parameter_constraints.keys():
+            if not (key in dict.keys):
+                raise KeyError(f"Cannot initialize model. Parameter {key} is missing")
+
+        return cls(**dict)
 
     def forward(self, y, x):
         """

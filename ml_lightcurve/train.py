@@ -15,8 +15,13 @@
 import numpy as np
 import h5py
 import os
+import json
 import datetime
 import pandas as pd
+import matplotlib.pyplot as plt
+from matplotlib.offsetbox import OffsetImage, AnnotationBbox, TextArea
+from mpl_toolkits.axes_grid1 import make_axes_locatable
+import seaborn as sb
 
 import torch
 from torch import nn
@@ -27,22 +32,34 @@ import torch.optim as optim
 
 from torch.utils.data import DataLoader, TensorDataset, Dataset
 from torch.utils.data.sampler import SubsetRandomSampler
+
 from sklearn import preprocessing
+from sklearn.manifold import TSNE
+import umap # https://umap-learn.readthedocs.io/en/latest/
 
 from model_cvae import CVAE
+
+# for reproducibility
+SEED = 42
+np.random.seed(SEED)
+torch.manual_seed(SEED)
+torch.cuda.manual_seed(SEED)
+torch.backends.cudnn.deterministic = True
 
 class LightCurveDataset(Dataset):
     """
     LightCurve dataset
     Dispatches a lightcurve to the appropriate index
     """
-    def __init__(self, pars:np.ndarray, lcs:np.ndarray, times:np.ndarray, device="cuda"):
+    def __init__(self, pars:np.ndarray, lcs:np.ndarray, times:np.ndarray, device="cuda",
+                 lc_transform_method="minmax"):
         self.device = device
         self.pars = np.array(pars)
         self.lcs = np.array(lcs)
         assert self.pars.shape[0] == self.lcs.shape[0], "size mismatch between lcs and pars"
         self.times = times
         self.len = len(self.lcs)
+        self.lc_transform_method = lc_transform_method
 
         # preprocess parameters
         self.scaler = preprocessing.MinMaxScaler()
@@ -50,12 +67,13 @@ class LightCurveDataset(Dataset):
         self.pars_normed = self.scaler.transform(pars)
         # inverse transform
         # inverse = scaler.inverse_transform(normalized)
-        if np.min(self.pars_normed) < 0 or np.max(self.pars_normed) > 1:
-            raise ValueError("Parameter normalization error")
+        if np.min(self.pars_normed) < 0. or np.max(self.pars_normed) > 1.01:
+            raise ValueError(f"Parameter normalization error: min={np.min(self.pars_normed)} max={np.max(self.pars_normed)}")
+
         # preprocess lcs
-        self._transform_lcs(self.lcs)
-        if np.min(self.lcs_log_norm) < 0 or np.max(self.lcs_log_norm) > 1:
-            raise ValueError("Parameter normalization error")
+        self.lcs_log_norm = self._transform_lcs(self.lcs)
+        if np.min(self.lcs_log_norm) < 0. or np.max(self.lcs_log_norm) > 1.01:
+            raise ValueError(f"LC normalization error: min={np.min(self.lcs_log_norm)} max={np.max(self.lcs_log_norm)}")
 
     def __getitem__(self, index):
         """ returns image/lc, vars(params)[normalized], vars(params)[physical] """
@@ -69,9 +87,22 @@ class LightCurveDataset(Dataset):
 
     def _transform_lcs(self, lcs):
         log_lcs = np.log10(lcs)
+
         self.lc_min = log_lcs.min()
         self.lc_max = log_lcs.max()
-        self.lcs_log_norm = (log_lcs - np.min(log_lcs)) / (np.max(log_lcs) - np.min(log_lcs))
+
+        if (self.lc_transform_method=="minmax"):
+            #self.lcs_log_norm = (log_lcs - np.min(log_lcs)) / (np.max(log_lcs) - np.min(log_lcs))
+            self.lc_scaler = preprocessing.MinMaxScaler(feature_range=(0.0001,0.9999)) # Otherwise max>1.000001
+
+        elif (self.lc_transform_method=="standard"):
+            self.lc_scaler = preprocessing.StandardScaler()
+
+        self.lc_scaler.fit(log_lcs)
+        return self.lc_scaler.transform(log_lcs)
+    def inverse_transform_lc_log(self, lcs_log_normed):
+        #return np.power(10, lcs_log_normed * (self.lc_max - self.lc_min) + self.lc_min)
+        return np.power(10., self.lc_scaler.inverse_transform(lcs_log_normed))
 
     def _transform_pars(self, _pars):
         print(_pars.shape, self.pars[:,0].shape)
@@ -80,9 +111,6 @@ class LightCurveDataset(Dataset):
                 raise ValueError(f"Parameter '{i}'={par} is outside of the training set limits "
                                  f"[{self.pars[:,i].min()}, {self.pars[:,i].max()}]")
         return self.scaler.transform(_pars)
-
-    def inverse_transform_lc_log(self, lcs_log_normed):
-        return np.power(10, lcs_log_normed * (self.lc_max - self.lc_min) + self.lc_min)
 
     def get_dataloader(self, batch_size=32, test_split=0.2):
         """
@@ -179,6 +207,45 @@ def save_checkpoint(model, optimizer, save_path, epoch):
         'epoch': epoch
     }, save_path)
 
+def plot_latent_space(z, y=None):
+    """Creates a joint plot of features, used during training
+
+    Parameters
+    ----------
+    z : numpy array
+        fetures to be plotted
+    y : list, optional
+        axis for color code
+
+    Returns
+    -------
+    fig
+        matplotlib figure
+    fig
+        image of matplotlib figure
+    """
+    plt.close('all')
+
+
+    df = pd.DataFrame(z)
+    if y is not None:
+        df.loc[:, 'y'] = y
+
+    pp = sb.pairplot(df,
+                     hue='y' if y is not None else None,
+                     hue_order=sorted(set(y)) if y is not None else None,
+                     diag_kind="hist", markers=".", height=2,
+                     plot_kws=dict(s=30, edgecolors='face', alpha=.8),
+                     )
+                     #diag_kws=dict(histtype='step'))
+
+    plt.tight_layout()
+    pp.fig.canvas.draw()
+    image = np.frombuffer(pp.fig.canvas.tostring_rgb(), dtype='uint8')
+    image  = image.reshape(pp.fig.canvas.get_width_height()[::-1] + (3,))
+
+    return (pp.fig, image)
+
 class Trainer:
     def __init__(self, model:CVAE, optimizer, batch_size, scheduler, beta, print_every, device):
         self.device = device
@@ -207,7 +274,7 @@ class Trainer:
 
         # ---
         self.model_dir = os.getcwd() + '/models/'
-        self.run_name = "test"
+        self.run_name = "model"
 
     def train(self, train_loader, test_loader, early_stopper, epochs, save=True, save_chkpt=False, early_stop=False):
         # hold samples, real and generated, for initial plotting
@@ -219,6 +286,7 @@ class Trainer:
 
         total_train_losses = { key : [] for key in self.train_loss.keys()}
         total_test_losses  = { key : [] for key in self.test_loss.keys()}
+
 
         for epoch in range(epochs):
             # one complete pass of the entire training dataset through the learning algorithm
@@ -262,11 +330,9 @@ class Trainer:
                     'epoch': epoch,
                     'model_state_dict': self.model.state_dict(),
                     'optimizer_state_dict': self.opt.state_dict(),
-                    # 'train_loss': train_running_loss,
-                    # 'val_loss': val_running_loss,
                     'beta':self._beta_scheduler(epoch)
                 },
-                    '%s/VAE_model_%s_%d.chkpt' % (self.model_dir, self.run_name, epoch))
+                    '%s/%s_%d.chkpt' % (self.model_dir, self.run_name, epoch))
 
             # stop training if a condition is met
             if early_stop:
@@ -277,7 +343,7 @@ class Trainer:
 
         # save final model state
         if save:
-            fname = '%s/VAE_model_%s.pt' % (self.model_dir, self.run_name)
+            fname = '%s/%s.pt' % (self.model_dir, self.run_name)
             print(f"Saving model {fname}")
             torch.save(self.model.state_dict(),fname)
             print(f"Model saved: {fname}")
@@ -307,9 +373,12 @@ class Trainer:
 
         # set model in an 'eval' mode
         self.model.eval()
-        # running_loss = 0
+
+        # latent_vectors = []
+        # latent_labels = []
+        # img_inputs = []
+
         with torch.no_grad():
-            xhat_plot, x_plot, l_plot = [], [], []
             for i, (data, label, data_phys, label_phys) in enumerate(test_loader):
                 # move data to device where model is
                 data = data.to(self.device)
@@ -318,10 +387,42 @@ class Trainer:
                 xhat, mu, logvar, z = self.model(data, label)
                 # compute loss
                 loss = self._loss(data, xhat, mu, logvar, train=False, ep=epoch)
-                # save batch loss
-                # running_loss += loss.item() * data.size(0)
+
+                # if i==0:
+                #     latent_vectors = xhat.cpu()
+                #     latent_labels = label.cpu()
+                #     img_inputs = data.cpu()
+                # else:
+                #     latent_vectors = torch.cat((latent_vectors,xhat.cpu()),0)
+                #     latent_labels = torch.cat((latent_labels,label.cpu()),0)
+                #     img_inputs = torch.cat((img_inputs,data.cpu()),0)
 
         self._report_test(epoch)
+
+        # from matplotlib.offsetbox import OffsetImage, AnnotationBbox, TextArea
+        # from sklearn.manifold import TSNE
+        #
+        # mode='dots'
+        # fig, ax = plt.subplots(figsize=(10, 7))
+        # ax.set_title('t-SNE')
+        # coords = TSNE(n_components=2, random_state=42).fit_transform(latent_vectors)
+        # if mode == 'imgs':
+        #     for image, (x, y) in zip(img_inputs.cpu(), coords):
+        #         im = OffsetImage(image.reshape(28, 28), zoom=1, cmap='gray')
+        #         ab = AnnotationBbox(im, (x, y), xycoords='data', frameon=False)
+        #         ax.add_artist(ab)
+        #     ax.update_datalim(coords)
+        #     ax.autoscale()
+        # elif mode == 'dots':
+        #     classes = latent_labels
+        #     plt.scatter(coords[:, 0], coords[:, 1])
+        #     # plt.colorbar()
+        #     # for i in range(10):
+        #     #     class_center = np.mean(coords[classes == i], axis=0)
+        #     #     text = TextArea('{}'.format(i))
+        #     #     ab = AnnotationBbox(text, class_center, xycoords='data', frameon=True)
+        #     #     ax.add_artist(ab)
+        # plt.show()
 
         return loss
 
@@ -345,10 +446,11 @@ class Trainer:
         self.model.train()
 
         # iterate over len(data)/batch_size
-        mu_ep, labels = [], []
-        xhat_plot, x_plot, l_plot = [], [], []
+        # mu_ep, labels = [], []
+        # xhat_plot, x_plot, l_plot = [], [], []
 
         # Get data for [start:start+batch_size] for each epoch
+        mu_ep, logvar_ep, labels = [], [], []
         for i, (data, label, data_phys, label_phys) in enumerate(data_loader):
             self.num_steps += 1
             # mode train data to device
@@ -372,6 +474,18 @@ class Trainer:
 
             # print train loss
             self._report_train(i)
+
+            # save batch loss
+            # mu_ep.append(mu.detach().cpu().numpy()) #(mu.data.cpu().numpy())
+            # logvar_ep.append(logvar.detach().cpu().numpy()) #(mu.data.cpu().numpy())
+            # labels.extend(label.detach().cpu().numpy())
+
+        # mu_ep = np.concatenate(mu_ep)
+        # logvar_ep = np.concatenate(logvar_ep)
+        # labels = np.array(labels)
+        # pp, image = plot_latent_space(mu_ep)
+        # plt.show()
+        # exit(1)
 
     def _loss(self, x, xhat, mu, logvar, train=True, ep=0):
         """
@@ -400,7 +514,7 @@ class Trainer:
             loss value
         """
 
-        bce = F.binary_cross_entropy(xhat, x, reduction='mean')
+        bce = F.binary_cross_entropy(xhat, x, reduction='mean') # "sum" in Kamile's code
 
         mse = F.mse_loss(xhat, x, reduction='mean')
 
@@ -507,7 +621,7 @@ class Trainer:
         else:
             return np.float32(self.beta)
 
-def train_main(lr=0.1, batch_size=64):
+def train_main(lr=0.1, batch_size=64, epochs=50, beta=0.01, run_name="", train=True):
     # Load Prepared data
     with h5py.File(os.getcwd()+'/data/'+"X.h5","r") as f:
         lcs = np.array(f["X"])
@@ -524,9 +638,10 @@ def train_main(lr=0.1, batch_size=64):
     if device.type == 'cuda':
         torch.cuda.empty_cache()
 
+    # device = torch.device("cpu") # Debugging cuda errors
 
     # init dataloaders for training
-    dataset = LightCurveDataset(pars, lcs, times)
+    dataset = LightCurveDataset(pars, lcs, times, lc_transform_method="minmax")
     # create data loaders (feed data to model for each fold)
     train_loader, test_loader = dataset.get_dataloader(batch_size=batch_size, test_split=.2)
 
@@ -559,16 +674,186 @@ def train_main(lr=0.1, batch_size=64):
     print('Optimizer    :', optimizer)
     print('LR Scheduler :', scheduler.__class__.__name__)
 
+    # prepare to save
+    outdir = os.getcwd()+"/models/"+run_name+"/"
+    if not os.path.isdir(outdir):
+        print(f"Creating dir: {outdir}")
+        os.mkdir(outdir)
+
+    # initialize trainer and train the model
+    if train:
+        trainer = Trainer(model=model, optimizer=optimizer, batch_size=batch_size,
+                          print_every=512, scheduler=scheduler,device=device, beta=beta)
+        trainer.model_dir = outdir
+
+        early_stopper = EarlyStopping(patience=10, min_delta=.01, verbose=True)
+
+        # train the model over 'epochs'
+        trainer.train(train_loader, test_loader, early_stopper, epochs=epochs, save=True, save_chkpt=True, early_stop=False)
+
+        # This file should + model checkpoints should be sufficient to restore the model for analysis later
+        metadata = {
+            "lc_transform_method":dataset.lc_transform_method,
+            "lr":lr,
+            "batch_size":batch_size,
+            "epochs":epochs,
+            "optimizer":{"name": 'step'},
+            "beta":beta,
+            "model":{
+                "image_size":model.image_size,
+                "hidden_dim":model.hidden_dim,
+                "z_dim": model.z_dim,
+                "c":model.c
+            }
+        }
+        fname = outdir + trainer.run_name+'.json'
+        with open(fname, 'w', encoding='utf-8') as f:
+            json.dump(metadata, f, ensure_ascii=False, indent=4)
+        print(f"Metadata for run {run_name} saved in {fname}")
+
+    # analyze checkpoints
+    figdir = os.getcwd()+"/models/"+run_name+"/"+"figs/"
+    if not os.path.isdir(figdir):
+        print(f"Creating dir: {figdir}")
+        os.mkdir(figdir)
+
+    for i in range(batch_size):
+        print(f"Processing {i}/{batch_size}")
+        # load model checkpoint
+        checkpoint = torch.load('%s/%s_%d.chkpt' % (outdir, "model", i))
+        model.load_state_dict(checkpoint["model_state_dict"])
+        optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+        epoch = checkpoint['epoch']
+        model.eval()
+
+        # compute the latent space distribution for each batch
+        xhat_collated = []
+        mu_collated = []
+        logvar_collated = []
+        labels_collated = []
+        data_collated = []
+        with torch.no_grad():
+            for i, (data, label, data_phys, label_phys) in enumerate(test_loader):
+                # move data to device where model is
+                data = data.to(device)
+                label = label.to(device)
+                # evaluate model on the data
+                xhat, mu, logvar, z = model(data, label)
+
+                # save the result to the arrays (detached to cpu)
+                if i==0:
+                    xhat_collated = xhat.cpu()
+                    mu_collated = mu.cpu()
+                    logvar_collated = logvar.cpu()
+                    labels_collated = label.cpu()
+                    data_collated = data.cpu()
+                else:
+                    xhat_collated = torch.cat((xhat_collated,xhat.cpu()),0)
+                    mu_collated = torch.cat((mu_collated,mu.cpu()),0)
+                    logvar_collated = torch.cat((logvar_collated,logvar.cpu()),0)
+                    labels_collated = torch.cat((labels_collated,label.cpu()),0)
+                    data_collated = torch.cat((data_collated,data.cpu()),0)
+
+            # limit data ( if there is too much )
+            if (len(xhat_collated[:,0]) > 20000):
+                rnd_idx = np.random.choice(mu.index.values, replace=False, size=20000)
+                xhat_collated = xhat_collated[rnd_idx,:]
+                mu_collated = mu_collated[rnd_idx,:]
+                logvar_collated = logvar_collated[rnd_idx,:]
+                labels_collated = labels_collated[rnd_idx,:]
+
+            # perform dimensionality reduction
+            dimensity_reduction_method = "umap"
+            if (dimensity_reduction_method=="t-SNE"):
+                xhat_tsne = TSNE(n_components=2, random_state=42).fit_transform(xhat_collated)
+                mu_to_tsne = TSNE(n_components=2, random_state=42).fit_transform(mu_collated)
+                logvar_to_tsne = TSNE(n_components=2, random_state=42).fit_transform(logvar_collated)
+            elif (dimensity_reduction_method=="umap"):
+                xhat_tsne = umap.UMAP(n_neighbors=100, min_dist=0.05,
+                                    n_components=2, metric='euclidean').fit_transform(xhat_collated)
+                mu_to_tsne = umap.UMAP(n_neighbors=100, min_dist=0.05,
+                                    n_components=2, metric='euclidean').fit_transform(mu_collated)
+                logvar_to_tsne = umap.UMAP(n_neighbors=100, min_dist=0.05,
+                                           n_components=2, metric='euclidean').fit_transform(logvar_collated)
+
+            # unpack
+            x_xhat, y_yhat = xhat_tsne[:, 0], xhat_tsne[:, 1]
+            x_mu, y_mu = mu_to_tsne[:, 0], mu_to_tsne[:, 1]
+            x_logvar, y_logvar = logvar_to_tsne[:, 0], logvar_to_tsne[:, 1]
+
+            # plot
+            fig, axes = plt.subplots(ncols=3,nrows=len(features_names),figsize=(10,15))
+
+            axes[0, 0].set_title("Xhat")
+            axes[0, 1].set_title("mu")
+            axes[0, 2].set_title("logvar")
+            for i, f in enumerate(features_names):
+                im = axes[i,0].scatter(x_xhat, y_yhat, marker='.', s=20, c=labels_collated[:,i], cmap='coolwarm_r', alpha=.7)
+                im = axes[i,1].scatter(x_mu, y_mu, marker='.', s=20, c=labels_collated[:,i], cmap='coolwarm_r', alpha=.7)
+                im = axes[i,2].scatter(x_logvar, y_logvar, marker='.', s=20, c=labels_collated[:,i], cmap='coolwarm_r', alpha=.7)
+
+                divider = make_axes_locatable(axes[i,2])
+                cax = divider.append_axes('right', size='5%', pad=0.05)
+                fig.colorbar(im, cax=cax, orientation='vertical', label=features_names[i])
+
+                for ax in axes[i,:]:
+                    # Hide X and Y axes label marks
+                    ax.xaxis.set_tick_params(labelbottom=False)
+                    ax.yaxis.set_tick_params(labelleft=False)
+
+                    # Hide X and Y axes tick marks
+                    ax.set_xticks([])
+                    ax.set_yticks([])
+
+            # plt.scatter(x, y, marker='.', s=20, c=labels_collated[:,5], cmap='coolwarm_r', alpha=.7)
+            # plt.colorbar(label=features_names[5])
+
+            # plt.xlabel('embedding 1')
+            # plt.ylabel('embedding 2')
+            # plt.legend(loc='best', fontsize='x-large')
+            plt.tight_layout()
+            plt.show()
 
 
-    # initialize trainer
-    trainer = Trainer(model=model, optimizer=optimizer, batch_size=batch_size,
-                      print_every=512, scheduler=scheduler,device=device, beta=0.01)
-    trainer.run_name = "loglr"+"{:.0f}".format(-1*np.log10(lr))+"_"+"batch{:.0f}".format(batch_size)
+            fig = plt.figure(figsize=(12, 9))
+            if disc:
+                c = cm.Dark2_r(np.linspace(0, 1, len(set(labels))))
+                for i, cls in enumerate(set(labels)):
+                    idx = np.where(labels == cls)[0]
+                    plt.scatter(x[idx], y[idx], marker='.', s=20,
+                                color=c[i], alpha=.7, label=cls)
+            else:
+                plt.scatter(x, y, marker='.', s=20,
+                            c=labels, cmap='coolwarm_r', alpha=.7)
+                plt.colorbar(label=c_label)
 
-    early_stopper = EarlyStopping(patience=10, min_delta=.01, verbose=True)
-    trainer.train(train_loader, test_loader, early_stopper, epochs=50, save=True, early_stop=False)
+            plt.xlabel('embedding 1')
+            plt.ylabel('embedding 2')
+            plt.legend(loc='best', fontsize='x-large')
+            plt.show()
 
 
+
+            mode='imgs'
+            fig, ax = plt.subplots(figsize=(10, 7))
+            ax.set_title(f't-SNE for {epoch}')
+            if mode == 'imgs':
+                for image, (x, y) in zip(data_collated.cpu(), xhat_tsne):
+                    im = OffsetImage(image.reshape(28, 28), zoom=1, cmap='gray')
+                    ab = AnnotationBbox(im, (x, y), xycoords='data', frameon=False)
+                    ax.add_artist(ab)
+                ax.update_datalim(xhat_tsne)
+                ax.autoscale()
+            elif mode == 'dots':
+                classes = labels_collated
+                plt.scatter(xhat_tsne[:, 0], xhat_tsne[:, 1])
+                # plt.colorbar()
+                # for i in range(10):
+                #     class_center = np.mean(coords[classes == i], axis=0)
+                #     text = TextArea('{}'.format(i))
+                #     ab = AnnotationBbox(text, class_center, xycoords='data', frameon=True)
+                #     ax.add_artist(ab)
+            # plt.show()
+            plt.savefig(figdir+f"latent_{epoch}.png")
 if __name__ == '__main__':
-    train_main(lr=1.e-3, batch_size=64)
+    train_main(lr=1.e-3, batch_size=64, epochs=50, beta=0.01, run_name="test0", train=False)
