@@ -12,6 +12,8 @@
 - [Astro ML BOOK repo with code](https://github.com/astroML/astroML_figures/blob/742df9181f73e5c903ea0fd0894ad6af83099c96/book_figures/chapter9/fig_sdss_vae.py#L45)
 
 """
+import gc
+
 import numpy as np
 import h5py
 import os
@@ -20,7 +22,9 @@ import datetime
 import pandas as pd
 import matplotlib.pyplot as plt
 from matplotlib.offsetbox import OffsetImage, AnnotationBbox, TextArea
+from matplotlib.colors import LogNorm, Normalize
 from mpl_toolkits.axes_grid1 import make_axes_locatable
+from matplotlib.cm import ScalarMappable
 import seaborn as sb
 
 import torch
@@ -37,7 +41,7 @@ from sklearn import preprocessing
 from sklearn.manifold import TSNE
 import umap # https://umap-learn.readthedocs.io/en/latest/
 
-from model_cvae import CVAE
+from model_cvae import Kamile_CVAE
 
 # for reproducibility
 SEED = 42
@@ -51,7 +55,7 @@ class LightCurveDataset(Dataset):
     LightCurve dataset
     Dispatches a lightcurve to the appropriate index
     """
-    def __init__(self, pars:np.ndarray, lcs:np.ndarray, times:np.ndarray, device="cuda",
+    def __init__(self, pars:np.ndarray, lcs:np.ndarray, times:np.ndarray, device:torch.device,
                  lc_transform_method="minmax"):
         self.device = device
         self.pars = np.array(pars)
@@ -100,6 +104,7 @@ class LightCurveDataset(Dataset):
 
         self.lc_scaler.fit(log_lcs)
         return self.lc_scaler.transform(log_lcs)
+
     def inverse_transform_lc_log(self, lcs_log_normed):
         #return np.power(10, lcs_log_normed * (self.lc_max - self.lc_min) + self.lc_min)
         return np.power(10., self.lc_scaler.inverse_transform(lcs_log_normed))
@@ -111,6 +116,9 @@ class LightCurveDataset(Dataset):
                 raise ValueError(f"Parameter '{i}'={par} is outside of the training set limits "
                                  f"[{self.pars[:,i].min()}, {self.pars[:,i].max()}]")
         return self.scaler.transform(_pars)
+
+    def _invert_transform_pars(self, _pars):
+        self.scaler.inverse_transform(_pars)
 
     def get_dataloader(self, batch_size=32, test_split=0.2):
         """
@@ -135,6 +143,8 @@ class LightCurveDataset(Dataset):
                                  sampler=test_sampler, drop_last=False)
 
         return (train_loader, test_loader)
+
+
 
 # Initialize learning Rate scheduler
 def select_scheduler(optimizer, lr_sch='step')->optim.lr_scheduler or None:
@@ -247,7 +257,7 @@ def plot_latent_space(z, y=None):
     return (pp.fig, image)
 
 class Trainer:
-    def __init__(self, model:CVAE, optimizer, batch_size, scheduler, beta, print_every, device):
+    def __init__(self, model:Kamile_CVAE, optimizer, batch_size, scheduler, beta, print_every, device):
         self.device = device
         self.model = model
         if torch.cuda.device_count() > 1 and True:
@@ -287,7 +297,6 @@ class Trainer:
         total_train_losses = { key : [] for key in self.train_loss.keys()}
         total_test_losses  = { key : [] for key in self.test_loss.keys()}
 
-
         for epoch in range(epochs):
             # one complete pass of the entire training dataset through the learning algorithm
             e_time = datetime.datetime.now()
@@ -316,9 +325,12 @@ class Trainer:
             # idx2 = (epoch+1)*self.batch_size + 1
 
             # store total losses
+            train_losses = { key : np.sum(self.train_loss[key][-self.batch_size:]) for key in self.train_loss.keys()}
+            test_losses = { key: np.sum(self.test_loss[key][-self.batch_size:]) for key in self.test_loss.keys()}
             for key in self.train_loss.keys():
-                total_train_losses[key].append( np.sum(self.train_loss[key][-self.batch_size:]) )
-                total_test_losses[key].append( np.sum(self.test_loss[key][-self.batch_size:]) )
+                total_train_losses[key].append(train_losses[key])
+            for key in self.test_loss.keys():
+                total_test_losses[key].append(test_losses[key])
 
             print(f"T={elap_time.seconds/60:.2f} m | T/Ep={epoch_time.seconds:.2f}s | "
                   f"TrainLoss={total_train_losses['Loss'][-1]:.4f} | TestLoss={total_test_losses['Loss'][-1]:.4f}")
@@ -330,9 +342,11 @@ class Trainer:
                     'epoch': epoch,
                     'model_state_dict': self.model.state_dict(),
                     'optimizer_state_dict': self.opt.state_dict(),
-                    'beta':self._beta_scheduler(epoch)
+                    'beta':self._beta_scheduler(epoch),
+                    'train_losses':train_losses,
+                    'test_losses':test_losses,
                 },
-                    '%s/%s_%d.chkpt' % (self.model_dir, self.run_name, epoch))
+                '%s/%s_%d.chkpt' % (self.model_dir, self.run_name, epoch))
 
             # stop training if a condition is met
             if early_stop:
@@ -345,7 +359,14 @@ class Trainer:
         if save:
             fname = '%s/%s.pt' % (self.model_dir, self.run_name)
             print(f"Saving model {fname}")
-            torch.save(self.model.state_dict(),fname)
+            torch.save({
+                'model_state_dict':self.model.state_dict(),
+                'optimizer_state_dict': self.opt.state_dict(),
+                'train_losses': total_train_losses,
+                'test_losses': total_test_losses,
+                'epochs':epochs
+            },
+            fname)
             print(f"Model saved: {fname}")
 
             out_train = pd.DataFrame.from_dict(total_train_losses)
@@ -638,19 +659,19 @@ def train_main(lr=0.1, batch_size=64, epochs=50, beta=0.01, run_name="", train=T
     if device.type == 'cuda':
         torch.cuda.empty_cache()
 
-    # device = torch.device("cpu") # Debugging cuda errors
+    device = torch.device("cpu") # Debugging cuda errors
 
     # init dataloaders for training
-    dataset = LightCurveDataset(pars, lcs, times, lc_transform_method="minmax")
+    dataset = LightCurveDataset(pars, lcs, times, device=device, lc_transform_method="minmax")
     # create data loaders (feed data to model for each fold)
     train_loader, test_loader = dataset.get_dataloader(batch_size=batch_size, test_split=.2)
 
 
     # init model
-    model = CVAE(image_size=len(lcs[0]),  #  150
-                 hidden_dim=700,
-                 z_dim=4 * len(features_names),
-                 c=len(features_names))
+    model = Kamile_CVAE(image_size=len(lcs[0]),  #  150
+                        hidden_dim=700,
+                        z_dim=4 * len(features_names),
+                        c=len(features_names))
     model.to(device)
 
     n_train_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
@@ -711,27 +732,48 @@ def train_main(lr=0.1, batch_size=64, epochs=50, beta=0.01, run_name="", train=T
             json.dump(metadata, f, ensure_ascii=False, indent=4)
         print(f"Metadata for run {run_name} saved in {fname}")
 
+
+
     # analyze checkpoints
     figdir = os.getcwd()+"/models/"+run_name+"/"+"figs/"
     if not os.path.isdir(figdir):
         print(f"Creating dir: {figdir}")
         os.mkdir(figdir)
 
-    for i in range(batch_size):
-        print(f"Processing {i}/{batch_size}")
+    n_components = 2
+    perplexity = 40
+    dimensity_reduction_method = "t-SNE"
+    # init file where to store reduced latent sapce
+    fname = outdir+f"latent_{dimensity_reduction_method}.h5"
+    dfile = h5py.File(fname,'w')
+    dfile.create_dataset("features_names", data=features_names)
+    dfile.attrs.create("epochs", data=epochs)
+    dfile.attrs.create("n_components", data=n_components)
+    dfile.attrs.create("perplexity", data=perplexity)
+    dfile.attrs.create("n_features", data=len(features_names))
+
+    for e in range(epochs):
+        print(f"Processing {e}/{epochs}")
+
         # load model checkpoint
-        checkpoint = torch.load('%s/%s_%d.chkpt' % (outdir, "model", i))
+        checkpoint = torch.load('%s/%s_%d.chkpt' % (outdir, "model", e), map_location=device)
         model.load_state_dict(checkpoint["model_state_dict"])
         optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
         epoch = checkpoint['epoch']
         model.eval()
 
+        group = dfile.create_group(f"epoch={epoch}")
+        # group_mu = dfile.create_group(f"mu_epoch={epoch}")
+        # group_logvar = dfile.create_group(f"logvar_epoch={epoch}")
+
         # compute the latent space distribution for each batch
-        xhat_collated = []
-        mu_collated = []
-        logvar_collated = []
-        labels_collated = []
-        data_collated = []
+        xhat_collated = torch.Tensor
+        mu_collated = torch.Tensor
+        logvar_collated = torch.Tensor
+        labels_collated = torch.Tensor
+        data_collated = torch.Tensor
+        phys_label_collated = np.ndarray
+
         with torch.no_grad():
             for i, (data, label, data_phys, label_phys) in enumerate(test_loader):
                 # move data to device where model is
@@ -747,113 +789,60 @@ def train_main(lr=0.1, batch_size=64, epochs=50, beta=0.01, run_name="", train=T
                     logvar_collated = logvar.cpu()
                     labels_collated = label.cpu()
                     data_collated = data.cpu()
+                    phys_label_collated = label_phys
                 else:
                     xhat_collated = torch.cat((xhat_collated,xhat.cpu()),0)
                     mu_collated = torch.cat((mu_collated,mu.cpu()),0)
                     logvar_collated = torch.cat((logvar_collated,logvar.cpu()),0)
                     labels_collated = torch.cat((labels_collated,label.cpu()),0)
                     data_collated = torch.cat((data_collated,data.cpu()),0)
+                    phys_label_collated = np.vstack((phys_label_collated,label_phys))
 
             # limit data ( if there is too much )
             if (len(xhat_collated[:,0]) > 20000):
                 rnd_idx = np.random.choice(mu.index.values, replace=False, size=20000)
-                xhat_collated = xhat_collated[rnd_idx,:]
-                mu_collated = mu_collated[rnd_idx,:]
-                logvar_collated = logvar_collated[rnd_idx,:]
-                labels_collated = labels_collated[rnd_idx,:]
+                xhat_collated = xhat_collated[rnd_idx, :]
+                mu_collated = mu_collated[rnd_idx, :]
+                logvar_collated = logvar_collated[rnd_idx, :]
+                labels_collated = labels_collated[rnd_idx, :]
+                phys_label_collated = phys_label_collated[rnd_idx, :]
 
             # perform dimensionality reduction
-            dimensity_reduction_method = "umap"
             if (dimensity_reduction_method=="t-SNE"):
-                xhat_tsne = TSNE(n_components=2, random_state=42).fit_transform(xhat_collated)
-                mu_to_tsne = TSNE(n_components=2, random_state=42).fit_transform(mu_collated)
-                logvar_to_tsne = TSNE(n_components=2, random_state=42).fit_transform(logvar_collated)
+                xhat_tsne = TSNE(n_components=n_components, perplexity=perplexity,
+                                 random_state=42, init="pca").fit_transform(xhat_collated)
+                mu_to_tsne = TSNE(n_components=n_components, perplexity=perplexity,
+                                  random_state=42, init="pca").fit_transform(mu_collated)
+                logvar_to_tsne = TSNE(n_components=n_components, perplexity=perplexity,
+                                      random_state=42, init="pca").fit_transform(logvar_collated)
+
             elif (dimensity_reduction_method=="umap"):
                 xhat_tsne = umap.UMAP(n_neighbors=100, min_dist=0.05,
-                                    n_components=2, metric='euclidean').fit_transform(xhat_collated)
+                                    n_components=n_components, metric='euclidean').fit_transform(xhat_collated)
                 mu_to_tsne = umap.UMAP(n_neighbors=100, min_dist=0.05,
-                                    n_components=2, metric='euclidean').fit_transform(mu_collated)
+                                    n_components=n_components, metric='euclidean').fit_transform(mu_collated)
                 logvar_to_tsne = umap.UMAP(n_neighbors=100, min_dist=0.05,
-                                           n_components=2, metric='euclidean').fit_transform(logvar_collated)
+                                           n_components=n_components, metric='euclidean').fit_transform(logvar_collated)
 
-            # unpack
-            x_xhat, y_yhat = xhat_tsne[:, 0], xhat_tsne[:, 1]
-            x_mu, y_mu = mu_to_tsne[:, 0], mu_to_tsne[:, 1]
-            x_logvar, y_logvar = logvar_to_tsne[:, 0], logvar_to_tsne[:, 1]
+            # store data in groups
+            group.create_dataset("xhat", data=xhat_tsne)
+            group.create_dataset("mu", data=mu_to_tsne)
+            group.create_dataset("logvar", data=logvar_to_tsne)
+            group.create_dataset("phys_labels", data=phys_label_collated)
 
-            # plot
-            fig, axes = plt.subplots(ncols=3,nrows=len(features_names),figsize=(10,15))
+        # clean data
+        del xhat_collated
+        del mu_collated
+        del logvar_collated
+        del labels_collated
+        del data_collated
+        del phys_label_collated
 
-            axes[0, 0].set_title("Xhat")
-            axes[0, 1].set_title("mu")
-            axes[0, 2].set_title("logvar")
-            for i, f in enumerate(features_names):
-                im = axes[i,0].scatter(x_xhat, y_yhat, marker='.', s=20, c=labels_collated[:,i], cmap='coolwarm_r', alpha=.7)
-                im = axes[i,1].scatter(x_mu, y_mu, marker='.', s=20, c=labels_collated[:,i], cmap='coolwarm_r', alpha=.7)
-                im = axes[i,2].scatter(x_logvar, y_logvar, marker='.', s=20, c=labels_collated[:,i], cmap='coolwarm_r', alpha=.7)
+        # clear memory
+        gc.collect()
 
-                divider = make_axes_locatable(axes[i,2])
-                cax = divider.append_axes('right', size='5%', pad=0.05)
-                fig.colorbar(im, cax=cax, orientation='vertical', label=features_names[i])
+    dfile.close()
+    print(f"File saved: {fname}")
 
-                for ax in axes[i,:]:
-                    # Hide X and Y axes label marks
-                    ax.xaxis.set_tick_params(labelbottom=False)
-                    ax.yaxis.set_tick_params(labelleft=False)
-
-                    # Hide X and Y axes tick marks
-                    ax.set_xticks([])
-                    ax.set_yticks([])
-
-            # plt.scatter(x, y, marker='.', s=20, c=labels_collated[:,5], cmap='coolwarm_r', alpha=.7)
-            # plt.colorbar(label=features_names[5])
-
-            # plt.xlabel('embedding 1')
-            # plt.ylabel('embedding 2')
-            # plt.legend(loc='best', fontsize='x-large')
-            plt.tight_layout()
-            plt.show()
-
-
-            fig = plt.figure(figsize=(12, 9))
-            if disc:
-                c = cm.Dark2_r(np.linspace(0, 1, len(set(labels))))
-                for i, cls in enumerate(set(labels)):
-                    idx = np.where(labels == cls)[0]
-                    plt.scatter(x[idx], y[idx], marker='.', s=20,
-                                color=c[i], alpha=.7, label=cls)
-            else:
-                plt.scatter(x, y, marker='.', s=20,
-                            c=labels, cmap='coolwarm_r', alpha=.7)
-                plt.colorbar(label=c_label)
-
-            plt.xlabel('embedding 1')
-            plt.ylabel('embedding 2')
-            plt.legend(loc='best', fontsize='x-large')
-            plt.show()
-
-
-
-            mode='imgs'
-            fig, ax = plt.subplots(figsize=(10, 7))
-            ax.set_title(f't-SNE for {epoch}')
-            if mode == 'imgs':
-                for image, (x, y) in zip(data_collated.cpu(), xhat_tsne):
-                    im = OffsetImage(image.reshape(28, 28), zoom=1, cmap='gray')
-                    ab = AnnotationBbox(im, (x, y), xycoords='data', frameon=False)
-                    ax.add_artist(ab)
-                ax.update_datalim(xhat_tsne)
-                ax.autoscale()
-            elif mode == 'dots':
-                classes = labels_collated
-                plt.scatter(xhat_tsne[:, 0], xhat_tsne[:, 1])
-                # plt.colorbar()
-                # for i in range(10):
-                #     class_center = np.mean(coords[classes == i], axis=0)
-                #     text = TextArea('{}'.format(i))
-                #     ab = AnnotationBbox(text, class_center, xycoords='data', frameon=True)
-                #     ax.add_artist(ab)
-            # plt.show()
-            plt.savefig(figdir+f"latent_{epoch}.png")
 if __name__ == '__main__':
     train_main(lr=1.e-3, batch_size=64, epochs=50, beta=0.01, run_name="test0", train=False)

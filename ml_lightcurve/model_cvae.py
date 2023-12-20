@@ -1,7 +1,7 @@
 import torch
 import torch.nn as nn
 
-class CVAE(nn.Module):
+class Kamile_CVAE(nn.Module):
     """
         Base pytorch cVAE class
     """
@@ -13,21 +13,32 @@ class CVAE(nn.Module):
         "c":["int"]
     }
 
-    def __init__(self, image_size=150, hidden_dim=50, z_dim=10, c=7):
+    def __init__(self, image_size=150, hidden_dim=50, z_dim=10, c=7, init_weights=True):
         """
         :param image_size: Size of 1D "images" of data set i.e. spectrum size
         :param hidden_dim: Dimension of hidden layer
         :param z_dim: Dimension of latent space (latent_units)
         :param c: Dimension of conditioning variables
         """
-        super(CVAE, self).__init__()
-        self.z_dim = z_dim
-        self.c = c
-        self.image_size=image_size
-        self.hidden_dim=hidden_dim
+        super(Kamile_CVAE, self).__init__()
+        # self.z_dim = z_dim
+        # self.c = c
+        # image_size=image_size
+        # self.hidden_dim=hidden_dim
         self.encoder = Encoder(image_size, hidden_dim, z_dim, c) # self.encoder = Encoder(latent_dims)
         self.decoder = Decoder(image_size, hidden_dim, z_dim, c) # self.decoder = Decoder(latent_dims)
-        self.init_weights()
+
+        if init_weights:
+            self.init_weights()
+
+        self.model_settings={
+            "name":"Kamile_CVAE",
+            "image_size":image_size,
+            "hidden_dim":hidden_dim,
+            "z_dim":z_dim,
+            "c":c,
+            "init_weights":init_weights
+        }
 
     @classmethod
     def init_from_dict(cls, dict : dict):
