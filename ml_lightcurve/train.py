@@ -110,7 +110,7 @@ class LightCurveDataset(Dataset):
         return np.power(10., self.lc_scaler.inverse_transform(lcs_log_normed))
 
     def _transform_pars(self, _pars):
-        print(_pars.shape, self.pars[:,0].shape)
+        # print(_pars.shape, self.pars[:,0].shape)
         for i, par in enumerate(_pars.flatten()):
             if (par < self.pars[:,i].min()) or (par > self.pars[:,i].max()):
                 raise ValueError(f"Parameter '{i}'={par} is outside of the training set limits "
@@ -297,6 +297,7 @@ class Trainer:
         total_train_losses = { key : [] for key in self.train_loss.keys()}
         total_test_losses  = { key : [] for key in self.test_loss.keys()}
 
+        epoch = 0
         for epoch in range(epochs):
             # one complete pass of the entire training dataset through the learning algorithm
             e_time = datetime.datetime.now()
@@ -324,9 +325,12 @@ class Trainer:
             # idx1 = epoch*self.batch_size  + 1
             # idx2 = (epoch+1)*self.batch_size + 1
 
-            # store total losses
-            train_losses = { key : np.sum(self.train_loss[key][-self.batch_size:]) for key in self.train_loss.keys()}
-            test_losses = { key: np.sum(self.test_loss[key][-self.batch_size:]) for key in self.test_loss.keys()}
+            # store total losses (see https://discuss.pytorch.org/t/plotting-loss-curve/42632/10)
+            train_losses = { key : np.sum(self.train_loss[key][-len(train_loader):])/len(train_loader)
+                             for key in self.train_loss.keys()}
+            test_losses = { key: np.sum(self.test_loss[key][-len(test_loader):])/len(test_loader)
+                            for key in self.test_loss.keys()}
+
             for key in self.train_loss.keys():
                 total_train_losses[key].append(train_losses[key])
             for key in self.test_loss.keys():
@@ -364,7 +368,8 @@ class Trainer:
                 'optimizer_state_dict': self.opt.state_dict(),
                 'train_losses': total_train_losses,
                 'test_losses': total_test_losses,
-                'epochs':epochs
+                'epochs':epochs,
+                'last_epoch':epoch
             },
             fname)
             print(f"Model saved: {fname}")
@@ -550,25 +555,26 @@ class Trainer:
 
         # compute total loss
         loss = bce + beta * kld_l #+ 1 * kld_o
+        # print(x.size(0))
         # loss = mse + beta * kld_o
 
         # log the result
         if train:
-            self.train_loss['BCE'].append(bce.item())
-            self.train_loss['MSE'].append(mse.item())
-            self.train_loss['wMSE'].append(wmse.item())
-            self.train_loss['KL_latent'].append(kld_l.item())
-            self.train_loss['KL_output'].append(kld_o.item())
-            self.train_loss['beta'].append(beta.item())
-            self.train_loss['Loss'].append(loss.item())
+            self.train_loss['BCE'].append(bce.item()*x.size(0))
+            self.train_loss['MSE'].append(mse.item()*x.size(0))
+            self.train_loss['wMSE'].append(wmse.item()*x.size(0))
+            self.train_loss['KL_latent'].append(kld_l.item()*x.size(0))
+            self.train_loss['KL_output'].append(kld_o.item()*x.size(0))
+            # self.train_loss['beta'].append(beta.item())
+            self.train_loss['Loss'].append(loss.item()*x.size(0))
         else:
-            self.test_loss['BCE'].append(bce.item())
-            self.test_loss['MSE'].append(mse.item())
-            self.test_loss['wMSE'].append(wmse.item())
-            self.test_loss['KL_latent'].append(kld_l.item())
-            self.test_loss['KL_output'].append(kld_o.item())
-            self.test_loss['beta'].append(beta.item())
-            self.test_loss['Loss'].append(loss.item())
+            self.test_loss['BCE'].append(bce.item()*x.size(0))
+            self.test_loss['MSE'].append(mse.item()*x.size(0))
+            self.test_loss['wMSE'].append(wmse.item()*x.size(0))
+            self.test_loss['KL_latent'].append(kld_l.item()*x.size(0))
+            self.test_loss['KL_output'].append(kld_o.item()*x.size(0))
+            # self.test_loss['beta'].append(beta.item())
+            self.test_loss['Loss'].append(loss.item()*x.size(0))
         return loss
 
     def _report_train(self, i):
@@ -590,7 +596,7 @@ class Trainer:
             print("\t wMSE : %3.4f" % (self.train_loss['wMSE'][-1]))
             print("\t KL_l : %3.4f" % (self.train_loss['KL_latent'][-1]))
             print("\t KL_o : %3.4f" % (self.train_loss['KL_output'][-1]))
-            print("\t beta : %3.4f" % (self.train_loss['beta'][-1]))
+            # print("\t beta : %3.4f" % (self.train_loss['beta'][-1]))
             print("\t Loss : %3.4f" % (self.train_loss['Loss'][-1]))
             print("-"*20)
 
@@ -613,7 +619,7 @@ class Trainer:
         print("\t wMSE : %3.4f" % (self.train_loss['wMSE'][-1]))
         print("\t KL_l : %3.4f" % (self.train_loss['KL_latent'][-1]))
         print("\t KL_o : %3.4f" % (self.train_loss['KL_output'][-1]))
-        print("\t beta : %3.4f" % (self.train_loss['beta'][-1]))
+        # print("\t beta : %3.4f" % (self.train_loss['beta'][-1]))
         print("\t Loss : %3.4f" % (self.train_loss['Loss'][-1]))
         print("-"*20)
 
@@ -642,7 +648,7 @@ class Trainer:
         else:
             return np.float32(self.beta)
 
-def train_main(lr=0.1, batch_size=64, epochs=50, beta=0.01, run_name="", train=True):
+def train_main(lr=0.1, batch_size=64, epochs=50, beta=0.01, run_name="", train=True, analyse=True):
     # Load Prepared data
     with h5py.File(os.getcwd()+'/data/'+"X.h5","r") as f:
         lcs = np.array(f["X"])
@@ -659,7 +665,7 @@ def train_main(lr=0.1, batch_size=64, epochs=50, beta=0.01, run_name="", train=T
     if device.type == 'cuda':
         torch.cuda.empty_cache()
 
-    device = torch.device("cpu") # Debugging cuda errors
+    # device = torch.device("cpu") # Debugging cuda errors
 
     # init dataloaders for training
     dataset = LightCurveDataset(pars, lcs, times, device=device, lc_transform_method="minmax")
@@ -715,134 +721,130 @@ def train_main(lr=0.1, batch_size=64, epochs=50, beta=0.01, run_name="", train=T
         # This file should + model checkpoints should be sufficient to restore the model for analysis later
         metadata = {
             "lc_transform_method":dataset.lc_transform_method,
-            "lr":lr,
             "batch_size":batch_size,
             "epochs":epochs,
-            "optimizer":{"name": 'step'},
+            "optimizer":{"name": 'adam', "lr":lr},
+            "lr_scheduler":{"name": 'step'},
             "beta":beta,
-            "model":{
-                "image_size":model.image_size,
-                "hidden_dim":model.hidden_dim,
-                "z_dim": model.z_dim,
-                "c":model.c
-            }
+            "model":model.model_settings
         }
         fname = outdir + trainer.run_name+'.json'
         with open(fname, 'w', encoding='utf-8') as f:
             json.dump(metadata, f, ensure_ascii=False, indent=4)
         print(f"Metadata for run {run_name} saved in {fname}")
 
-
-
     # analyze checkpoints
-    figdir = os.getcwd()+"/models/"+run_name+"/"+"figs/"
-    if not os.path.isdir(figdir):
-        print(f"Creating dir: {figdir}")
-        os.mkdir(figdir)
+    if analyse:
 
-    n_components = 2
-    perplexity = 40
-    dimensity_reduction_method = "t-SNE"
-    # init file where to store reduced latent sapce
-    fname = outdir+f"latent_{dimensity_reduction_method}.h5"
-    dfile = h5py.File(fname,'w')
-    dfile.create_dataset("features_names", data=features_names)
-    dfile.attrs.create("epochs", data=epochs)
-    dfile.attrs.create("n_components", data=n_components)
-    dfile.attrs.create("perplexity", data=perplexity)
-    dfile.attrs.create("n_features", data=len(features_names))
+        # analyze checkpoints
+        figdir = os.getcwd()+"/models/"+run_name+"/"+"figs/"
+        if not os.path.isdir(figdir):
+            print(f"Creating dir: {figdir}")
+            os.mkdir(figdir)
 
-    for e in range(epochs):
-        print(f"Processing {e}/{epochs}")
+        n_components = 2
+        perplexity = 40
+        dimensity_reduction_method = "t-SNE"
+        # init file where to store reduced latent sapce
+        fname = outdir+f"latent_{dimensity_reduction_method}.h5"
+        dfile = h5py.File(fname,'w')
+        dfile.create_dataset("features_names", data=features_names)
+        dfile.attrs.create("epochs", data=epochs)
+        dfile.attrs.create("n_components", data=n_components)
+        dfile.attrs.create("perplexity", data=perplexity)
+        dfile.attrs.create("n_features", data=len(features_names))
 
-        # load model checkpoint
-        checkpoint = torch.load('%s/%s_%d.chkpt' % (outdir, "model", e), map_location=device)
-        model.load_state_dict(checkpoint["model_state_dict"])
-        optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
-        epoch = checkpoint['epoch']
-        model.eval()
+        for e in range(epochs):
+            print(f"Processing {e}/{epochs}")
 
-        group = dfile.create_group(f"epoch={epoch}")
-        # group_mu = dfile.create_group(f"mu_epoch={epoch}")
-        # group_logvar = dfile.create_group(f"logvar_epoch={epoch}")
+            # load model checkpoint
+            checkpoint = torch.load('%s/%s_%d.chkpt' % (outdir, "model", e), map_location=device)
+            model.load_state_dict(checkpoint["model_state_dict"])
+            optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+            epoch = checkpoint['epoch']
+            model.eval()
 
-        # compute the latent space distribution for each batch
-        xhat_collated = torch.Tensor
-        mu_collated = torch.Tensor
-        logvar_collated = torch.Tensor
-        labels_collated = torch.Tensor
-        data_collated = torch.Tensor
-        phys_label_collated = np.ndarray
+            group = dfile.create_group(f"epoch={epoch}")
+            # group_mu = dfile.create_group(f"mu_epoch={epoch}")
+            # group_logvar = dfile.create_group(f"logvar_epoch={epoch}")
 
-        with torch.no_grad():
-            for i, (data, label, data_phys, label_phys) in enumerate(test_loader):
-                # move data to device where model is
-                data = data.to(device)
-                label = label.to(device)
-                # evaluate model on the data
-                xhat, mu, logvar, z = model(data, label)
+            # compute the latent space distribution for each batch
+            xhat_collated = torch.Tensor
+            mu_collated = torch.Tensor
+            logvar_collated = torch.Tensor
+            labels_collated = torch.Tensor
+            data_collated = torch.Tensor
+            phys_label_collated = np.ndarray
 
-                # save the result to the arrays (detached to cpu)
-                if i==0:
-                    xhat_collated = xhat.cpu()
-                    mu_collated = mu.cpu()
-                    logvar_collated = logvar.cpu()
-                    labels_collated = label.cpu()
-                    data_collated = data.cpu()
-                    phys_label_collated = label_phys
-                else:
-                    xhat_collated = torch.cat((xhat_collated,xhat.cpu()),0)
-                    mu_collated = torch.cat((mu_collated,mu.cpu()),0)
-                    logvar_collated = torch.cat((logvar_collated,logvar.cpu()),0)
-                    labels_collated = torch.cat((labels_collated,label.cpu()),0)
-                    data_collated = torch.cat((data_collated,data.cpu()),0)
-                    phys_label_collated = np.vstack((phys_label_collated,label_phys))
+            with torch.no_grad():
+                for i, (data, label, data_phys, label_phys) in enumerate(test_loader):
+                    # move data to device where model is
+                    data = data.to(device)
+                    label = label.to(device)
+                    # evaluate model on the data
+                    xhat, mu, logvar, z = model(data, label)
 
-            # limit data ( if there is too much )
-            if (len(xhat_collated[:,0]) > 20000):
-                rnd_idx = np.random.choice(mu.index.values, replace=False, size=20000)
-                xhat_collated = xhat_collated[rnd_idx, :]
-                mu_collated = mu_collated[rnd_idx, :]
-                logvar_collated = logvar_collated[rnd_idx, :]
-                labels_collated = labels_collated[rnd_idx, :]
-                phys_label_collated = phys_label_collated[rnd_idx, :]
+                    # save the result to the arrays (detached to cpu)
+                    if i==0:
+                        xhat_collated = xhat.cpu()
+                        mu_collated = mu.cpu()
+                        logvar_collated = logvar.cpu()
+                        labels_collated = label.cpu()
+                        data_collated = data.cpu()
+                        phys_label_collated = label_phys
+                    else:
+                        xhat_collated = torch.cat((xhat_collated,xhat.cpu()),0)
+                        mu_collated = torch.cat((mu_collated,mu.cpu()),0)
+                        logvar_collated = torch.cat((logvar_collated,logvar.cpu()),0)
+                        labels_collated = torch.cat((labels_collated,label.cpu()),0)
+                        data_collated = torch.cat((data_collated,data.cpu()),0)
+                        phys_label_collated = np.vstack((phys_label_collated,label_phys))
 
-            # perform dimensionality reduction
-            if (dimensity_reduction_method=="t-SNE"):
-                xhat_tsne = TSNE(n_components=n_components, perplexity=perplexity,
-                                 random_state=42, init="pca").fit_transform(xhat_collated)
-                mu_to_tsne = TSNE(n_components=n_components, perplexity=perplexity,
-                                  random_state=42, init="pca").fit_transform(mu_collated)
-                logvar_to_tsne = TSNE(n_components=n_components, perplexity=perplexity,
-                                      random_state=42, init="pca").fit_transform(logvar_collated)
+                # limit data ( if there is too much )
+                if (len(xhat_collated[:,0]) > 20000):
+                    rnd_idx = np.random.choice(mu.index.values, replace=False, size=20000)
+                    xhat_collated = xhat_collated[rnd_idx, :]
+                    mu_collated = mu_collated[rnd_idx, :]
+                    logvar_collated = logvar_collated[rnd_idx, :]
+                    labels_collated = labels_collated[rnd_idx, :]
+                    phys_label_collated = phys_label_collated[rnd_idx, :]
 
-            elif (dimensity_reduction_method=="umap"):
-                xhat_tsne = umap.UMAP(n_neighbors=100, min_dist=0.05,
-                                    n_components=n_components, metric='euclidean').fit_transform(xhat_collated)
-                mu_to_tsne = umap.UMAP(n_neighbors=100, min_dist=0.05,
-                                    n_components=n_components, metric='euclidean').fit_transform(mu_collated)
-                logvar_to_tsne = umap.UMAP(n_neighbors=100, min_dist=0.05,
-                                           n_components=n_components, metric='euclidean').fit_transform(logvar_collated)
+                # perform dimensionality reduction
+                if (dimensity_reduction_method=="t-SNE"):
+                    xhat_tsne = TSNE(n_components=n_components, perplexity=perplexity,
+                                     random_state=42, init="pca").fit_transform(xhat_collated)
+                    mu_to_tsne = TSNE(n_components=n_components, perplexity=perplexity,
+                                      random_state=42, init="pca").fit_transform(mu_collated)
+                    logvar_to_tsne = TSNE(n_components=n_components, perplexity=perplexity,
+                                          random_state=42, init="pca").fit_transform(logvar_collated)
 
-            # store data in groups
-            group.create_dataset("xhat", data=xhat_tsne)
-            group.create_dataset("mu", data=mu_to_tsne)
-            group.create_dataset("logvar", data=logvar_to_tsne)
-            group.create_dataset("phys_labels", data=phys_label_collated)
+                elif (dimensity_reduction_method=="umap"):
+                    xhat_tsne = umap.UMAP(n_neighbors=100, min_dist=0.05,
+                                        n_components=n_components, metric='euclidean').fit_transform(xhat_collated)
+                    mu_to_tsne = umap.UMAP(n_neighbors=100, min_dist=0.05,
+                                        n_components=n_components, metric='euclidean').fit_transform(mu_collated)
+                    logvar_to_tsne = umap.UMAP(n_neighbors=100, min_dist=0.05,
+                                               n_components=n_components, metric='euclidean').fit_transform(logvar_collated)
 
-        # clean data
-        del xhat_collated
-        del mu_collated
-        del logvar_collated
-        del labels_collated
-        del data_collated
-        del phys_label_collated
+                # store data in groups
+                group.create_dataset("xhat", data=xhat_tsne)
+                group.create_dataset("mu", data=mu_to_tsne)
+                group.create_dataset("logvar", data=logvar_to_tsne)
+                group.create_dataset("phys_labels", data=phys_label_collated)
 
-        # clear memory
-        gc.collect()
+            # clean data
+            del xhat_collated
+            del mu_collated
+            del logvar_collated
+            del labels_collated
+            del data_collated
+            del phys_label_collated
 
-    dfile.close()
-    print(f"File saved: {fname}")
+            # clear memory
+            gc.collect()
+
+        dfile.close()
+        print(f"File saved: {fname}")
 
 if __name__ == '__main__':
-    train_main(lr=1.e-3, batch_size=64, epochs=50, beta=0.01, run_name="test0", train=False)
+    train_main(lr=1.e-3, batch_size=64, epochs=50, beta=0.01, run_name="test0", train=True, analyse=False)
