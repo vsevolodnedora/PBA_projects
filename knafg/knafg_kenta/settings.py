@@ -15,7 +15,9 @@ SIMULATIONS = {
         "res":150,
         "given_time":"new",
         "given_date":"12/11/2023",
-        "label":r"SFHo (1.35-1.35)$M_{\odot}$ (150m)"
+        "label":r"SFHo (1.35-1.35)$M_{\odot}$ (150m)",
+        "M1":1.35,"M2":1.35,"Mb1":1.48606,"Mb2":1.48606,"C1":0.1675,"C2":0.1675, "Lambda":416.185826350486,
+
     },
     "SFHo_135_135_res150" : {
         "idx":1,
@@ -29,7 +31,8 @@ SIMULATIONS = {
         "res":150,
         "given_time":"old",
         "given_date":"",
-        "label":r"SFHo (1.35-1.35)$M_{\odot}$ (150m)"
+        "label":r"SFHo (1.35-1.35)$M_{\odot}$ (150m)",
+        "M1":1.35,"M2":1.35,"Mb1":1.48606,"Mb2":1.48606,"C1":0.1675,"C2":0.1675, "Lambda":416.185826350486,
     },
     # --------------------------
     "SFHo_13_14_res150" : {
@@ -44,7 +47,8 @@ SIMULATIONS = {
         "res":150,
         "given_time":"new",
         "given_date":"10/26/2023", # "9/7/2023"
-        "label":"SFHo (1.3-1.4)$M_{\odot}$ (150m)"
+        "label":"SFHo (1.3-1.4)$M_{\odot}$ (150m)",
+        "M1":1.3,"M2":1.4,"Mb1":None,"Mb2":None,"C1":None,"C2":None, "Lambda":None,
     },
     # --------------------------
     "SFHo_125_145_res150" : {
@@ -59,7 +63,8 @@ SIMULATIONS = {
         "res":150,
         "given_time":"old",
         "given_date":"",
-        "label":"SFHo (1.25-1.45)$M_{\odot}$ (150m)"
+        "label":"SFHo (1.25-1.45)$M_{\odot}$ (150m)",
+        "M1":1.25,"M2":1.45,"Mb1":None,"Mb2":None,"C1":None,"C2":None, "Lambda":None,
     },
     "SFHo_125_145_res200" : {
         "idx":4,
@@ -73,7 +78,8 @@ SIMULATIONS = {
         "res":200,
         "given_time":"old",
         "given_date":"9/25/2023",
-        "label":"SFHo (1.25-1.45)$M_{\odot}$ (200m)"
+        "label":"SFHo (1.25-1.45)$M_{\odot}$ (200m)",
+        "M1":1.3,"M2":1.4,"Mb1":None,"Mb2":None,"C1":None,"C2":None, "Lambda":None,
     },
     # --------------------------
     "SFHo_12_15_res150" : {
@@ -88,7 +94,8 @@ SIMULATIONS = {
         "res":150,
         "given_time":"old",
         "given_date":"9/15/2023",
-        "label":"SFHo (1.2-1.5)$M_{\odot}$ (150m)"
+        "label":"SFHo (1.2-1.5)$M_{\odot}$ (150m)",
+        "M1":1.2,"M2":1.5,"Mb1":None,"Mb2":None,"C1":None,"C2":None, "Lambda":None,
     },
     "SFHo_12_15_res200" : {
         "idx":6,
@@ -102,7 +109,8 @@ SIMULATIONS = {
         "res":200,
         "given_time":"old",
         "given_date":"",
-        "label":r"SFHo (1.2-1.5)$M_{\odot}$ (200m)"
+        "label":r"SFHo (1.2-1.5)$M_{\odot}$ (200m)",
+        "M1":1.2,"M2":1.5,"Mb1":None,"Mb2":None,"C1":None,"C2":None, "Lambda":None,
     },
     "SFHo_12_15_res150_B15_HLLD":{
         "idx":7,
@@ -116,7 +124,8 @@ SIMULATIONS = {
         "res":150,
         "given_time":"new",
         "given_data":"11/01/2023",
-        "label":r"SFHo$^*$ (1.2-1.5)$M_{\odot}$ (150m)"
+        "label":r"SFHo$^*$ (1.2-1.5)$M_{\odot}$ (150m)",
+        "M1":1.2,"M2":1.5,"Mb1":None,"Mb2":None,"C1":None,"C2":None, "Lambda":None,
     },
     #### =========== BHBlp ================
     "BHBLp_135_135_res150" : {
@@ -132,7 +141,8 @@ SIMULATIONS = {
         "res":150,
         "given_time":"new",
         "given_date":"10/11/2023",
-        "label":"BHBLp (1.35-1.35)$M_{\odot}$ (150m)"
+        "label":"BHBLp (1.35-1.35)$M_{\odot}$ (150m)",
+        "M1":1.35,"M2":1.35,"Mb1":1.47277,"Mb2":1.47277,"C1":0.15103,"C2":0.15103, "Lambda":848.044957999892,
     },
     #### =========== BHBlp ================
     "DD2_135_135_res150" : {
@@ -148,7 +158,8 @@ SIMULATIONS = {
         "res":150,
         "given_time":"new",
         "given_date":"12/13/2023",
-        "label":"DD2$^*$ (1.35-1.35)$M_{\odot}$ (150m)"
+        "label":"DD2$^*$ (1.35-1.35)$M_{\odot}$ (150m)",
+        "M1":1.35,"M2":1.35,"Mb1":1.47277,"Mb2":1.47277,"C1":0.15103,"C2":0.15103, "Lambda":848.044957999892,
     },
 }
 
