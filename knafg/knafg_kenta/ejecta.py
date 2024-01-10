@@ -39,7 +39,6 @@ except ImportError:
     except:
         raise ImportError("Cannot import PyBlastAfterglowMag")
 
-
 from settings import *
 
 class ProcessRaw():
@@ -81,12 +80,11 @@ class ProcessRaw():
             data = np.stack([self.dfile["time={}".format(time)][v_n] for time in self.getText()],axis=2)
         else:
             np.array(self.dfile["time={}".format(text)][v_n])
+
 def process(sim : dict) -> None:
     ej = ProcessRaw(simumlation = sim)
     ej.process_raw_ejecta_files()
     print("Data collation is successful")
-
-
 
 
 def main():
