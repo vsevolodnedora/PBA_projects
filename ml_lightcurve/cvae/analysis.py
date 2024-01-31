@@ -1,22 +1,6 @@
-from matplotlib import pyplot as plt
-from matplotlib.offsetbox import OffsetImage, AnnotationBbox, TextArea
-import matplotlib
 import numpy as np
-import pandas as pd
 import torch
-import torchvision
-from torch import nn
-from torch.autograd import Variable
-from torch.utils.data import DataLoader
-from torch.utils import data
-import torch.nn.functional as F
 from torchvision import transforms
-from torchvision.datasets import MNIST
-from torchvision.utils import save_image
-from sklearn.model_selection import train_test_split
-from tqdm import tqdm, tqdm_notebook
-from sklearn.manifold import TSNE
-from sklearn.decomposition import PCA
 
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -31,7 +15,7 @@ transform = transforms.Compose([transforms.ToTensor(), transforms.Normalize((0.5
 print('Training on',DEVICE)
 
 # init model and load final state
-from model_cvae import Kamile_CVAE
+from ml_lightcurve.cvae.model_cvae import Kamile_CVAE
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 if device.type == 'cuda':

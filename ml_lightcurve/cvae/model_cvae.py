@@ -1,10 +1,79 @@
 import torch
 import torch.nn as nn
 
+class Encoder(nn.Module):
+    """
+    Encoder of the cVAE
+    """
+
+    def __init__(self, image_size=150, hidden_dim=50, z_dim=10, c=7):
+        """
+        :param image_size: Size of 1D "images" of data set i.e. spectrum size
+        :param hidden_dim: Dimension of hidden layer
+        :param z_dim: Dimension of latent space
+        :param c: Dimension of conditioning variables
+
+        """
+        super().__init__()
+
+        # nn.Linear(latent_dims, 512)
+        self.layers_mu = nn.Sequential(
+            nn.Linear(image_size + c, hidden_dim),
+            nn.Tanh(),
+            nn.Linear(hidden_dim, hidden_dim),
+            nn.Tanh(),
+            nn.Linear(hidden_dim, z_dim),
+        )
+
+        self.layers_logvar = nn.Sequential(
+            nn.Linear(image_size + c, hidden_dim),
+            nn.Tanh(),
+            nn.Linear(hidden_dim, hidden_dim),
+            nn.Tanh(),
+            nn.Linear(hidden_dim, z_dim),
+        )
+
+    def forward(self, x):
+        """
+        Compute single pass through the encoder
+
+        :param x: Concatenated images and corresponding conditioning variables
+        :return: Mean and log variance of the encoder's distribution
+        """
+        mean = self.layers_mu(x)
+        logvar = self.layers_logvar(x)
+        return mean, logvar
+class Decoder(nn.Module):
+    """
+    Decoder of cVAE
+    """
+
+    def __init__(self, image_size=150, hidden_dim=50, z_dim=10, c=7):
+        super().__init__()
+
+        self.layers = nn.Sequential(
+            nn.Linear(z_dim + c, hidden_dim),
+            nn.Tanh(),
+            nn.Linear(hidden_dim, hidden_dim),
+            nn.Tanh(),
+            nn.Linear(hidden_dim, image_size),
+            nn.Sigmoid(),
+        )
+
+    def forward(self, z):
+        """
+        Compute single pass through the decoder
+
+        :param z: Concatenated sample of hidden variables and the originally inputted conditioning variables
+        :return: Mean of decoder's distirbution
+        """
+        mean = self.layers(z)
+        return mean
 class Kamile_CVAE(nn.Module):
     """
         Base pytorch cVAE class
     """
+    name = "Kamile_CVAE"
     def __init__(self, image_size=150, hidden_dim=50, z_dim=10, c=7, init_weights=True, **kwargs):
         """
         :param image_size: Size of 1D "images" of data set i.e. spectrum size
@@ -78,75 +147,3 @@ class Kamile_CVAE(nn.Module):
                 nn.init.normal_(param, 0.0)
             elif 'weight' in name:
                 nn.init.xavier_normal_(param)
-
-
-class Encoder(nn.Module):
-    """
-    Encoder of the cVAE
-    """
-
-    def __init__(self, image_size=150, hidden_dim=50, z_dim=10, c=7):
-        """
-        :param image_size: Size of 1D "images" of data set i.e. spectrum size
-        :param hidden_dim: Dimension of hidden layer
-        :param z_dim: Dimension of latent space
-        :param c: Dimension of conditioning variables
-
-        """
-        super().__init__()
-
-        # nn.Linear(latent_dims, 512)
-        self.layers_mu = nn.Sequential(
-            nn.Linear(image_size + c, hidden_dim),
-            nn.Tanh(),
-            nn.Linear(hidden_dim, hidden_dim),
-            nn.Tanh(),
-            nn.Linear(hidden_dim, z_dim),
-        )
-
-        self.layers_logvar = nn.Sequential(
-            nn.Linear(image_size + c, hidden_dim),
-            nn.Tanh(),
-            nn.Linear(hidden_dim, hidden_dim),
-            nn.Tanh(),
-            nn.Linear(hidden_dim, z_dim),
-        )
-
-    def forward(self, x):
-        """
-        Compute single pass through the encoder
-
-        :param x: Concatenated images and corresponding conditioning variables
-        :return: Mean and log variance of the encoder's distribution
-        """
-        mean = self.layers_mu(x)
-        logvar = self.layers_logvar(x)
-        return mean, logvar
-
-
-class Decoder(nn.Module):
-    """
-    Decoder of cVAE
-    """
-
-    def __init__(self, image_size=150, hidden_dim=50, z_dim=10, c=7):
-        super().__init__()
-
-        self.layers = nn.Sequential(
-            nn.Linear(z_dim + c, hidden_dim),
-            nn.Tanh(),
-            nn.Linear(hidden_dim, hidden_dim),
-            nn.Tanh(),
-            nn.Linear(hidden_dim, image_size),
-            nn.Sigmoid(),
-        )
-
-    def forward(self, z):
-        """
-        Compute single pass through the decoder
-
-        :param z: Concatenated sample of hidden variables and the originally inputted conditioning variables
-        :return: Mean of decoder's distirbution
-        """
-        mean = self.layers(z)
-        return mean

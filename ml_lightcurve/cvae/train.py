@@ -286,7 +286,8 @@ class Trainer:
         self.model_dir = os.getcwd() + '/models/'
         self.run_name = "model"
 
-    def train(self, train_loader, test_loader, early_stopper, epochs, save=True, save_chkpt=False, early_stop=False):
+    def train(self, train_loader, test_loader, early_stopper, epochs,
+              save=True, save_chkpt=False, early_stop=False):
         # hold samples, real and generated, for initial plotting
 
         # train for n number of epochs
@@ -847,4 +848,4 @@ def train_main(lr=0.1, batch_size=64, epochs=50, beta=0.01, run_name="", train=T
         print(f"File saved: {fname}")
 
 if __name__ == '__main__':
-    train_main(lr=1.e-3, batch_size=64, epochs=50, beta=0.01, run_name="test0", train=True, analyse=False)
+    train_main(lr=1.e-3, batch_size=64, epochs=50, beta=0.01, run_name="test1", train=True, analyse=False)
