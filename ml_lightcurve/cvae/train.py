@@ -55,20 +55,19 @@ class LightCurveDataset(Dataset):
     LightCurve dataset
     Dispatches a lightcurve to the appropriate index
     """
-    def __init__(self, pars:np.ndarray, lcs:np.ndarray, times:np.ndarray, device:torch.device,
-                 lc_transform_method="minmax"):
+    def __init__(self, working_dir, device:torch.device, lc_transform_method="minmax"):
+
+        self.working_dir = working_dir
         self.device = device
-        self.pars = np.array(pars)
-        self.lcs = np.array(lcs)
-        assert self.pars.shape[0] == self.lcs.shape[0], "size mismatch between lcs and pars"
-        self.times = times
-        self.len = len(self.lcs)
         self.lc_transform_method = lc_transform_method
 
-        # preprocess parameters
+        # load dataset
+        self.load_preprocessed_dataset()
+
+        # scale parameters
         self.scaler = preprocessing.MinMaxScaler()
-        self.scaler.fit(pars)
-        self.pars_normed = self.scaler.transform(pars)
+        self.scaler.fit(self.pars)
+        self.pars_normed = self.scaler.transform(self.pars)
         # inverse transform
         # inverse = scaler.inverse_transform(normalized)
         if np.min(self.pars_normed) < 0. or np.max(self.pars_normed) > 1.01:
@@ -78,6 +77,24 @@ class LightCurveDataset(Dataset):
         self.lcs_log_norm = self._transform_lcs(self.lcs)
         if np.min(self.lcs_log_norm) < 0. or np.max(self.lcs_log_norm) > 1.01:
             raise ValueError(f"LC normalization error: min={np.min(self.lcs_log_norm)} max={np.max(self.lcs_log_norm)}")
+
+    def load_preprocessed_dataset(self):
+        # Load Prepared data
+        with h5py.File(self.working_dir+"X.h5","r") as f:
+            self.lcs = np.array(f["X"])
+            self.times = np.array(f["time"])
+        with h5py.File(self.working_dir+"Y.h5","r") as f:
+            self.pars = np.array(f["Y"])
+            self.features_names = list([str(val.decode("utf-8")) for val in f["keys"]])
+
+        print(f"lcs={self.lcs.shape}, pars={self.pars.shape}, times={self.times.shape}")
+        print(f"lcs={self.lcs.min()}, {self.lcs.max()}, pars={self.pars.min()} "
+              f"{self.pars.max()}, times={self.times.shape}")
+        print(self.features_names)
+        assert self.pars.shape[0] == self.lcs.shape[0], "size mismatch between lcs and pars"
+        self.len = len(self.lcs)
+
+    # return (pars, lcs, times)
 
     def __getitem__(self, index):
         """ returns image/lc, vars(params)[normalized], vars(params)[physical] """
@@ -257,7 +274,7 @@ def plot_latent_space(z, y=None):
     return (pp.fig, image)
 
 class Trainer:
-    def __init__(self, model:Kamile_CVAE, optimizer, batch_size, scheduler, beta, print_every, device):
+    def __init__(self, model : Kamile_CVAE, optimizer, batch_size, scheduler, beta, print_every, device):
         self.device = device
         self.model = model
         if torch.cuda.device_count() > 1 and True:
@@ -283,7 +300,7 @@ class Trainer:
         self.beta = beta
 
         # ---
-        self.model_dir = os.getcwd() + '/models/'
+        self.model_dir = os.getcwd() + '/runs/'
         self.run_name = "model"
 
     def train(self, train_loader, test_loader, early_stopper, epochs,
@@ -649,45 +666,33 @@ class Trainer:
         else:
             return np.float32(self.beta)
 
-def train_main(lr=0.1, batch_size=64, epochs=50, beta=0.01, run_name="", train=True, analyse=True):
+
+def load_preprocessed_dataset():
     # Load Prepared data
-    with h5py.File(os.getcwd()+'/data/'+"X.h5","r") as f:
+    with h5py.File(os.getcwd()+"X.h5","r") as f:
         lcs = np.array(f["X"])
         times = np.array(f["time"])
-    with h5py.File(os.getcwd()+'/data/'+"Y.h5","r") as f:
+    with h5py.File(os.getcwd()+"Y.h5","r") as f:
         pars = np.array(f["Y"])
         features_names = list([str(val.decode("utf-8")) for val in f["keys"]])
 
     print(f"lcs={lcs.shape}, pars={pars.shape}, times={times.shape}")
     print(f"lcs={lcs.min()}, {lcs.max()}, pars={pars.min()} {pars.max()}, times={times.shape}")
     print(features_names)
+    return (pars, lcs, times)
 
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    if device.type == 'cuda':
-        torch.cuda.empty_cache()
+def train_main(model, dataset:LightCurveDataset, run_pars:dict, device, run_name="", train=True, analyse=True):
 
     # device = torch.device("cpu") # Debugging cuda errors
 
-    # init dataloaders for training
-    dataset = LightCurveDataset(pars, lcs, times, device=device, lc_transform_method="minmax")
     # create data loaders (feed data to model for each fold)
-    train_loader, test_loader = dataset.get_dataloader(batch_size=batch_size, test_split=.2)
+    train_loader, test_loader = dataset.get_dataloader(batch_size=run_pars["batch_size"], test_split=.2)
 
-
-    # init model
-    model = Kamile_CVAE(image_size=len(lcs[0]),  #  150
-                        hidden_dim=700,
-                        z_dim=4 * len(features_names),
-                        c=len(features_names))
     model.to(device)
-
-    n_train_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
-    print(f'Num of trainable params: {n_train_params}')
-    # print(model)
 
     # Initialize optimizers
     # lgorithms that adjust the model's parameters during training to minimize a loss function
-    optimizer = optim.Adam(model.parameters(), lr=lr)
+    optimizer = optim.Adam(model.parameters(), lr=run_pars["lr"])
     # optimizer = torch.optim.SGD(model.parameters(), lr=learning_rate, momentum=0.9, nesterov=True)
 
     # INSTANTIATE STEP LEARNING SCHEDULER CLASS
@@ -703,7 +708,7 @@ def train_main(lr=0.1, batch_size=64, epochs=50, beta=0.01, run_name="", train=T
     print('LR Scheduler :', scheduler.__class__.__name__)
 
     # prepare to save
-    outdir = os.getcwd()+"/models/"+run_name+"/"
+    outdir = os.getcwd()+"/runs/"+run_name+"/"
     if not os.path.isdir(outdir):
         print(f"Creating dir: {outdir}")
         os.mkdir(outdir)
@@ -724,7 +729,8 @@ def train_main(lr=0.1, batch_size=64, epochs=50, beta=0.01, run_name="", train=T
             "lc_transform_method":dataset.lc_transform_method,
             "batch_size":batch_size,
             "epochs":epochs,
-            "optimizer":{"name": 'adam', "lr":lr},
+            "optimizer":{"name": 'adam',
+                         "lr":lr},
             "lr_scheduler":{"name": 'step'},
             "beta":beta,
             "model":model.model_settings
@@ -738,7 +744,7 @@ def train_main(lr=0.1, batch_size=64, epochs=50, beta=0.01, run_name="", train=T
     if analyse:
 
         # analyze checkpoints
-        figdir = os.getcwd()+"/models/"+run_name+"/"+"figs/"
+        figdir = os.getcwd()+"/runs/"+run_name+"/"+"figs/"
         if not os.path.isdir(figdir):
             print(f"Creating dir: {figdir}")
             os.mkdir(figdir)
@@ -848,4 +854,19 @@ def train_main(lr=0.1, batch_size=64, epochs=50, beta=0.01, run_name="", train=T
         print(f"File saved: {fname}")
 
 if __name__ == '__main__':
-    train_main(lr=1.e-3, batch_size=64, epochs=50, beta=0.01, run_name="test1", train=True, analyse=False)
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    if device.type == 'cuda':
+        torch.cuda.empty_cache()
+    working_dir = os.getcwd() + '/'
+    dataset = LightCurveDataset(working_dir=working_dir, device=device, lc_transform_method="minmax")
+    run_pars = {"lr":1.e-3, "batch_size":64, "epochs":50, "beta":0.01}
+    model = Kamile_CVAE(
+        image_size=len(dataset.lcs[0]),  #  150
+        hidden_dim=700,
+        z_dim=4 * len(dataset.features_names),
+        c=len(dataset.features_names)
+    )
+    n_train_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
+    print(f'Num of trainable params: {n_train_params}')
+
+    train_main(model=model, dataset=dataset,run_pars=run_pars, device=device, run_name="test1", train=True, analyse=False)
