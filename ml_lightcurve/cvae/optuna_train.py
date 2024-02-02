@@ -11,10 +11,21 @@
 - [Data sampling with scikit](https://machinelearningmastery.com/how-to-improve-neural-network-stability-and-modeling-performance-with-data-scaling/)
 - [Astro ML BOOK repo with code](https://github.com/astroML/astroML_figures/blob/742df9181f73e5c903ea0fd0894ad6af83099c96/book_figures/chapter9/fig_sdss_vae.py#L45)
 
+rsync -arvP --append ./{optuna_train.py,model_cvae.py,X.h5,Y.h5} vnedora@urash.gw.physik.uni-potsdam.de:/home/enlil/vnedora/work/cvae_optuna/
+
 """
+
+from typing import Dict, Any
+import hashlib
+import joblib
+
 import copy
 import gc,os,h5py,json,datetime,numpy as np
 import pandas as pd
+from sklearn.metrics import root_mean_squared_error
+
+import optuna
+from optuna.trial import TrialState
 
 import matplotlib.pyplot as plt
 from matplotlib.colors import LogNorm
@@ -36,21 +47,42 @@ np.random.seed(SEED)
 torch.manual_seed(SEED)
 torch.cuda.manual_seed(SEED)
 torch.backends.cudnn.deterministic = True
+torch.backends.cudnn.enabled = False  # Disable cuDNN use of nondeterministic algorithms
 
 class LightCurveDataset(Dataset):
     """
     LightCurve dataset
     Dispatches a lightcurve to the appropriate index
     """
-    def __init__(self, working_dir, batch_size, lc_transform_method="minmax"):
+    def __init__(self):
+        pass
 
-        self.batch_size = batch_size
-        self.working_dir = working_dir
-        self.lc_transform_method = lc_transform_method
+    def load_normalize_data(self, data_dir, lc_transform_method="minmax", limit=None):
+        self._load_preprocessed_dataset(data_dir,limit)
+        self._normalize_data(lc_transform_method)
 
-        # load dataset
-        self.load_preprocessed_dataset()
+    def _load_preprocessed_dataset(self, data_dir, limit=None):
+        # Load Prepared data
+        with h5py.File(data_dir+"X.h5","r") as f:
+            self.lcs = np.array(f["X"])
+            self.times = np.array(f["time"])
+        with h5py.File(data_dir+"Y.h5","r") as f:
+            self.pars = np.array(f["Y"])
+            self.features_names = list([str(val.decode("utf-8")) for val in f["keys"]])
 
+        if not limit is None:
+            print(f"LIMITING data to {limit}")
+            self.lcs = self.lcs[:limit]
+            self.pars = self.pars[:limit]
+
+        print(f"lcs={self.lcs.shape}, pars={self.pars.shape}, times={self.times.shape}")
+        print(f"lcs={self.lcs.min()}, {self.lcs.max()}, pars={self.pars.min()} "
+              f"{self.pars.max()}, times={self.times.shape}")
+        print(self.features_names)
+        assert self.pars.shape[0] == self.lcs.shape[0], "size mismatch between lcs and pars"
+        self.len = len(self.lcs)
+
+    def _normalize_data(self, lc_transform_method="minmax"):
         # scale parameters
         self.scaler = preprocessing.MinMaxScaler()
         self.scaler.fit(self.pars)
@@ -61,27 +93,10 @@ class LightCurveDataset(Dataset):
             raise ValueError(f"Parameter normalization error: min={np.min(self.pars_normed)} max={np.max(self.pars_normed)}")
 
         # preprocess lcs
+        self.lc_transform_method = lc_transform_method
         self.lcs_log_norm = self._transform_lcs(self.lcs)
         if np.min(self.lcs_log_norm) < 0. or np.max(self.lcs_log_norm) > 1.01:
             raise ValueError(f"LC normalization error: min={np.min(self.lcs_log_norm)} max={np.max(self.lcs_log_norm)}")
-
-    def load_preprocessed_dataset(self):
-        # Load Prepared data
-        with h5py.File(self.working_dir+"X.h5","r") as f:
-            self.lcs = np.array(f["X"])
-            self.times = np.array(f["time"])
-        with h5py.File(self.working_dir+"Y.h5","r") as f:
-            self.pars = np.array(f["Y"])
-            self.features_names = list([str(val.decode("utf-8")) for val in f["keys"]])
-
-        print(f"lcs={self.lcs.shape}, pars={self.pars.shape}, times={self.times.shape}")
-        print(f"lcs={self.lcs.min()}, {self.lcs.max()}, pars={self.pars.min()} "
-              f"{self.pars.max()}, times={self.times.shape}")
-        print(self.features_names)
-        assert self.pars.shape[0] == self.lcs.shape[0], "size mismatch between lcs and pars"
-        self.len = len(self.lcs)
-
-    # return (pars, lcs, times)
 
     def __getitem__(self, index):
         """ returns image/lc, vars(params)[normalized], vars(params)[physical] """
@@ -89,6 +104,7 @@ class LightCurveDataset(Dataset):
                 torch.from_numpy(self.pars_normed[index]).to(torch.float),  # .to(self.device) .reshape(-1,1)
                 self.lcs[index],
                 self.pars[index])
+
 
     def __len__(self):
         return len(self.lcs)
@@ -124,7 +140,7 @@ class LightCurveDataset(Dataset):
     def _invert_transform_pars(self, _pars):
         self.scaler.inverse_transform(_pars)
 
-    def get_dataloader(self, test_split=0.2):
+    def get_dataloader(self, test_split=0.2, batch_size=32):
         """
         If
         :param batch_size: if 1 it is stochastic gradient descent, else mini-batch gradient descent
@@ -138,20 +154,19 @@ class LightCurveDataset(Dataset):
         train_indices, test_indices = indices[split:], indices[:split]
 
         # Creating PT data samplers and loaders:
-        train_sampler = SubsetRandomSampler(train_indices)
-        test_sampler = SubsetRandomSampler(test_indices)
-
-        train_loader = DataLoader(self, batch_size=self.batch_size,
-                                  sampler=train_sampler, drop_last=False)
-        test_loader = DataLoader(self, batch_size=self.batch_size,
-                                 sampler=test_sampler, drop_last=False)
+        self.train_sampler = SubsetRandomSampler(train_indices)
+        self.valid_sampler = SubsetRandomSampler(test_indices)
+        train_loader = DataLoader(self, batch_size=batch_size,
+                                  sampler=self.train_sampler, drop_last=False)
+        test_loader = DataLoader(self, batch_size=batch_size,
+                                 sampler=self.valid_sampler, drop_last=False)
 
         return (train_loader, test_loader)
 
 class EarlyStopping:
     """Early stops the training if validation loss doesn't
         improve after a given patience."""
-    def __init__(self, pars):
+    def __init__(self, pars, verbose):
         """
         Attributes
         ----------
@@ -166,7 +181,7 @@ class EarlyStopping:
             If True, prints a message for each validation loss improvement.
             Default: False
         """
-
+        self.verbose = verbose
         self.patience = pars["patience"]
         self.verbose = pars["verbose"]
         self.counter = 0
@@ -183,7 +198,8 @@ class EarlyStopping:
             self.best_score = current_loss
         elif abs(current_loss - self.best_score) < self.min_delta:
             self.counter += 1
-            print(f'EarlyStopping counter: {self.counter} / {self.patience}')
+            if self.verbose:
+                print(f'EarlyStopping counter: {self.counter} / {self.patience}')
             if self.counter >= self.patience:
                 return True
         else:
@@ -217,7 +233,7 @@ def select_scheduler(optimizer, pars:dict)->optim.lr_scheduler or None:
         scheduler = None
     return scheduler
 
-def select_model(device, pars):
+def select_model(device, pars, verbose):
 
     name = pars["name"]
     del pars["name"]
@@ -227,14 +243,16 @@ def select_model(device, pars):
         raise NameError(f"Model {name} is not recognized")
 
     n_train_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
-
-    print(f'Num of trainable params: {n_train_params}')
+    if verbose:
+        print(f'Num of trainable params: {n_train_params}')
 
     if torch.cuda.device_count() > 1 and True:
         print("Let's use", torch.cuda.device_count(), "GPUs!")
         model = nn.DataParallel(model)
+
     # model.to(device)
-    model=torch.compile(model, backend="aot_eager").to(device)
+    model = torch.compile(model, backend="aot_eager").to(device)
+
     return model
 
 def beta_scheduler(beta, epoch, beta0=0., step=50, gamma=0.1):
@@ -287,125 +305,10 @@ def reset_weights(m):
     '''
     for layer in m.children():
         if hasattr(layer, 'reset_parameters'):
-            print(f'\tReset trainable parameters of layer = {layer}')
             layer.reset_parameters()
 
-def run(pars:dict,device,model,loss_cvae,optimizer,scheduler,early_stopper):
 
-    # ==================== DATA ====================
 
-    train_loader, test_loader = dataset.get_dataloader(test_split=.2)
-
-    # =================== TRAIN & TEST ===================
-
-    epochs = pars["epochs"]
-    beta = pars["beta"] # or 'step'
-    time_start = datetime.datetime.now()
-    train_loss = {key: [] for key in ["KL_latent", "BCE", "MSE", "Loss"]}
-    valid_loss  = {key: [] for key in ["KL_latent", "BCE", "MSE", "Loss"]}
-    epoch, num_steps = 0, 0
-    for epoch in range(epochs):
-        e_time = datetime.datetime.now()
-        print(f"----------------| Epoch {epoch}/{epochs} |-----------------")
-
-        beta = beta_scheduler(beta, epoch) # Scheduler for beta value
-
-        # ------------- Train -------------
-        model.train() # set model into training mode
-        losses = []
-        for i, (data, label, data_phys, label_phys) in enumerate(train_loader):
-            num_steps += 1
-            data = data.to(device)
-            label = label.to(device)
-
-            optimizer.zero_grad() # Resets the gradients of all optimized tensors
-            xhat, mu, logvar, z = model(data, label) # Forward pass only to get logits/output (evaluate model)
-            loss = loss_cvae(data, xhat, mu, logvar, beta) # compute/store loss
-            loss.backward() # computes dloss/dx for every parameter x which has requires_grad=True.
-            optimizer.step() # perform a single optimization step
-
-            losses.append(loss.item())
-        # train_loss['Loss'].append(losses / len(train_loader) * dataset.batch_size)
-        train_loss['Loss'].append(np.mean(losses))
-        print("\t Train loss : %.3e" % (train_loss['Loss'][-1]))
-
-        # ------------- Validate -------------
-        model.eval()
-        losses = []
-        with torch.no_grad():
-            for i, (data, label, data_phys, label_phys) in enumerate(test_loader):
-                data = data.to(device)
-                label = label.to(device)
-                xhat, mu, logvar, z = model(data, label) # evaluate model on the data
-                loss = loss_cvae(data, xhat, mu, logvar, beta) #  computes dloss/dx requires_grad=False
-
-                losses.append(loss.item())
-        # valid_loss['Loss'].append(losses / len(test_loader) * dataset.batch_size)
-        valid_loss['Loss'].append(np.mean(losses))
-        print("\t Test loss : %.3e" % (valid_loss['Loss'][-1]))
-
-        # ------------- Update -------------
-        if scheduler is not None:
-            if scheduler.__class__.__name__ == 'ReduceLROnPlateau':
-                scheduler.step(valid_loss['Loss'][-1])
-            else:
-                scheduler.step()
-
-        epoch_time = datetime.datetime.now() - e_time
-        elap_time = datetime.datetime.now() - time_start
-        print(f"\t Time={elap_time.seconds/60:.2f} m  Time/Epoch={epoch_time.seconds:.2f} s ")
-
-        # ------------- Save chpt -------------
-        if not pars["checkpoint_dir"] is None:
-            fname = '%s_%d.chkpt' % (pars["checkpoint_dir"], epoch)
-            print("\t Saving checkpoint")
-            torch.save({
-                'epoch': epoch,
-                'model_state_dict': model.state_dict(),
-                'optimizer_state_dict': optimizer.state_dict(),
-                'beta': beta_scheduler(beta, epoch),
-                'train_losses':valid_loss['Loss'][-1],
-                'test_losses':valid_loss['Loss'][-1],
-                'train_batch': len(train_loader),
-                'test_batch':len(test_loader)
-            }, fname)
-
-        # ------------- Stop if -------------
-        if (early_stopper(valid_loss['Loss'][-1])):
-            break
-
-    # =================== SAVE ===================
-
-    if not pars["final_model_dir"] is None:
-        fname = pars["final_model_dir"] + "model.pt"
-        print(f"Saving model {fname}")
-        torch.save({
-            'model_state_dict':model.state_dict(),
-            'optimizer_state_dict': optimizer.state_dict(),
-            'train_losses': train_loss,
-            'valid_losses': valid_loss,
-            'metadata':{
-                "batch_size":dataset.batch_size,
-                "beta":beta,
-                "epochs":epochs,
-                "last_epoch":epoch},
-            "dataset":{
-                "x_transform":"minmax",
-                "y_transform":"log_minmax"
-            }
-        }, fname)
-
-        print(f"Saving loss history")
-        res = {"train_losses":train_loss["Loss"], "valid_losses":valid_loss["Loss"]}
-        pd.DataFrame.from_dict(res).to_csv(fname.replace('.pt','_loss_history.csv'), index=False)
-
-    # ================== CLEAR ===================
-
-    model.apply(reset_weights)
-
-    del train_loss
-    del valid_loss
-    gc.collect()
 
 def inference(pars:list, model:Kamile_CVAE, dataset:LightCurveDataset, device):
     # if len(pars) != model.z_dim:
@@ -428,7 +331,7 @@ def inference(pars:list, model:Kamile_CVAE, dataset:LightCurveDataset, device):
     lc_nn = dataset.inverse_transform_lc_log(reconstructions_np)
     return lc_nn
 
-def plot_lcs(tasks, model, dataset, model_dir):
+def plot_lcs(tasks, model, device, dataset, model_dir):
 
     freqs = np.unique(dataset.pars[:,dataset.features_names.index("freq")])
     norm = LogNorm(vmin=np.min(freqs),
@@ -490,29 +393,155 @@ def plot_lcs(tasks, model, dataset, model_dir):
 
     plt.tight_layout()
     plt.savefig(model_dir+"/lcs.png",dpi=256)
-    plt.show()
+    # plt.show()
+    plt.close(fig)
+
+def plot_violin(delta, dataset, model_dir):
 
 
-def analyze(dataset,model,device,model_dir):
+    def find_nearest_index(array, value):
+        ''' Finds index of the value in the array that is the closest to the provided one '''
+        idx = (np.abs(array - value)).argmin()
+        return idx
+
+    cmap_name = "coolwarm_r" # 'coolwarm_r'
+    cmap = plt.get_cmap(cmap_name)
+
+    freqs = np.unique(dataset.pars[:,dataset.features_names.index("freq")])
+    norm = LogNorm(vmin=np.min(freqs),
+                   vmax=np.max(freqs))
+
+    req_times = np.array([0.1, 1., 10., 100., 1000., 1e4]) * 86400.
+
+    fig, axes = fig, ax = plt.subplots(2, 3, figsize=(12, 5), sharex="all", sharey="all")
+    ax = ax.flatten()
+    for ifreq, freq in enumerate(freqs):
+        i_mask1 = dataset.pars[:, dataset.features_names.index("freq")] == freq
+
+        _delta = delta[i_mask1]
+        time_indeces = [find_nearest_index(dataset.times, t) for t in req_times]
+        _delta = _delta[:, time_indeces]
+
+        color = cmap(norm(freqs[0]))
+
+        if np.sum(_delta) == 0:
+            raise ValueError(f"np.sum(delta) == 0 delta={_delta.shape}")
+        # print(_delta.shape)
+        violin = ax[ifreq].violinplot(_delta, positions=range(len(req_times)),
+                                      showextrema=False, showmedians=True)
+
+
+        for pc in violin['bodies']:
+            pc.set_facecolor(color)
+        violin['cmedians'].set_color(color)
+        for it, t in enumerate(req_times):
+            ax[ifreq].vlines(it, np.quantile(_delta[:,it], 0.025), np.quantile(_delta[:,it], 0.975),
+                             color=color, linestyle='-', alpha=.8)
+
+        # ax[ifreq].hlines([-1,0,1], 0.1, 6.5, colors='gray', linestyles=['dashed', 'dotted', 'dashed'], alpha=0.5)
+
+
+        ax[ifreq].set_xticks(np.arange(0, len(req_times)))
+        # print(ax[ifreq].get_xticklabels(), ax[ifreq])
+        _str = lambda t : '{:.1f}'.format(t/86400.) if t/86400. < 1 else '{:.0f}'.format(t/86400.)
+        ax[ifreq].set_xticklabels([_str(t) for t in req_times])
+
+        ax[ifreq].annotate(f"{freq/1e9:.1f} GHz", xy=(1, 1),xycoords='axes fraction',
+                           fontsize=12, horizontalalignment='right', verticalalignment='bottom')
+
+
+    # Create the new axis for marginal X and Y labels
+    ax = fig.add_subplot(111, frameon=False)
+
+    # Disable ticks. using ax.tick_params() works as well
+    ax.set_xticks([])
+    ax.set_yticks([])
+
+    # Set X and Y label. Add labelpad so that the text does not overlap the ticks
+    ax.set_xlabel(r"Time [days]", labelpad=20, fontsize=12)
+    ax.set_ylabel(r"$\Delta \log_{10}(F_{\nu})$", labelpad=40, fontsize=12)
+    plt.tight_layout()
+    plt.savefig(model_dir+"violin.png",dpi=256)
+
+    # plt.show()
+
+def plot_loss(model, loss_df, model_dir):
+    fig, ax = plt.subplots(ncols=1,nrows=1,figsize=(5,3))
+    ax.plot(range(len(loss_df)), loss_df["train_losses"],ls='-',color='blue',label='training loss')
+    ax.plot(range(len(loss_df)), loss_df["valid_losses"],ls='-',color='red',label='validation loss')
+    ax.grid()
+    ax.set_xlabel("Epoch")
+    ax.set_ylabel("Loss")
+    ax.legend(loc='best')
+    plt.tight_layout()
+    plt.savefig(model_dir+"/loss.png",dpi=256)
+    # plt.show()
+    plt.close(fig)
+
+def analyze(dataset,model,device,model_dir,verbose):
+    """ returns rms between log(light curves) and log(predicted light curves) """
     state = torch.load(model_dir+"model.pt", map_location=device)
     model.load_state_dict(state["model_state_dict"])
     model.eval()
     model.to(device)
 
+    # analyze loss
+    loss_df = pd.read_csv(model_dir+"model_loss_history.csv")
+    plot_loss(model, loss_df, model_dir)
+
+    # plot selected light curves
     tasks = [
         {"pars":{"eps_e":0.001,"eps_b":0.01,"eps_t":1.,"p":2.2,"theta_obs":0.,"n_ism":1e0}, "all_freqs":True},
         {"pars":{"eps_e":0.01,"eps_b":0.01,"eps_t":1.,"p":2.2,"theta_obs":0.,"n_ism":0.01}, "all_freqs":True},
         {"pars":{"eps_e":0.1,"eps_b":0.01,"eps_t":1.,"p":2.2,"theta_obs":0.,"n_ism":0.001}, "all_freqs":True},
     ]
-    plot_lcs(tasks, model, dataset, model_dir)
+    plot_lcs(tasks, model, device, dataset, model_dir)
 
-    return (model, state)
+    # compute difference between all light curves and NN light curves
+    nn_lcs = np.vstack((
+        [inference(dataset.pars[j, :], model, dataset, device)
+            for j in range(len(dataset.pars[:,0]))]
+    ))
+    print(f"lcs={dataset.lcs.shape} nn_lcs={nn_lcs.shape}")
+    log_lcs = np.log10(dataset.lcs)
+    log_nn_lcs = np.log10(nn_lcs)
+    delta = (log_lcs - log_nn_lcs)
 
-if __name__ == '__main__':
+    plot_violin(delta, dataset, model_dir)
 
-    working_dir = os.getcwd() + '/'
-    checkpoint_dir = None#"new_run/"
-    final_model_dir = "new_run/"
+    # return total error
+    rmse = root_mean_squared_error(log_lcs, log_nn_lcs)
+    if verbose:
+        print("Total RMSE: {:.2e}".format(rmse))
+    return rmse
+
+def dict_hash(dictionary: Dict[str, Any]) -> str:
+    """MD5 hash of a dictionary."""
+    dhash = hashlib.md5()
+    # We need to sort arguments so {'a': 1, 'b': 2} is
+    # the same as {'b': 2, 'a': 1}
+    encoded = json.dumps(dictionary, sort_keys=True).encode()
+    dhash.update(encoded)
+    return dhash.hexdigest()
+
+def make_dir_for_run(working_dir, trial, dict_, verbose):
+    final_model_dir = f"{working_dir}/trial_{trial}/"
+    if not os.path.exists(final_model_dir):
+        os.makedirs(final_model_dir)
+    else:
+        raise FileExistsError(final_model_dir)
+    if verbose:
+        print("Saving pars in {}".format(final_model_dir))
+    with open(final_model_dir+"pars.json", "w") as outfile:
+        json.dump(dict_, outfile)
+    return final_model_dir
+
+def objective(trial:optuna.trial.Trial):
+    # ------------------------------
+    do = True
+    verbose = False
+    print(f"TRIAL {trial.number}")
+    # ------------------------------
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     if device.type == 'cuda':
@@ -521,36 +550,37 @@ if __name__ == '__main__':
     else:
         print("Running on CPU")
 
-
-    batch_size = 64
-    dataset = LightCurveDataset(working_dir=working_dir, batch_size=batch_size,
-                                lc_transform_method="minmax")
-
     # =================== INIT ===================
+    main_pars = {
+        "batch_size":trial.suggest_int("batch_size", low=16, high=128, step=8) if do else 32,
+        "epochs":100,
+        "beta":"step"
+    }
+
     model_pars = {"name":"Kamile_CVAE",
                   "image_size":len(dataset.lcs[0]),
-                  "hidden_dim":150, # 700
-                  "z_dim":4*len(dataset.features_names),
+                  "hidden_dim": trial.suggest_int("hidden_dim", low=50, high=1000, step=10) if do else 200,
+                  "z_dim": trial.suggest_int("z_dim", low=4, high=64, step=4) if do else len(dataset.features_names),
                   "c":len(dataset.features_names),
                   "init_weights":True
                   }
-    model = select_model(device, copy.deepcopy(model_pars))
+    model = select_model(device, copy.deepcopy(model_pars), verbose)
     loss_pars = {
-        "mse_or_bce":"mse",
-        "reduction":"mean", # sum
-        "kld_norm":True,
-        "use_beta":True
+        "mse_or_bce":trial.suggest_categorical(name="mse_or_bce",choices=["mse","bce"]) if do else "mse",
+        "reduction":trial.suggest_categorical(name="reduction",choices=["sum","mean"]) if do else "sum",
+        "kld_norm":trial.suggest_categorical(name="kld_norm",choices=[True,False]) if do else True,
+        "use_beta":trial.suggest_categorical(name="use_beta",choices=[True,False]) if do else True,
     }
-    loss = Loss(loss_pars)
+    loss_cvae = Loss(loss_pars)
     optimizer_pars = {
         "name":"Adam",
-        "lr":1.e-3
+        "lr":trial.suggest_float(name="lr", low=1.e-6, high=1.e-2, log=True) if do else 1.e-2
     }
     optimizer = select_optimizer(model, copy.deepcopy(optimizer_pars))
     scheduler_pars = {
         "name":"step",
-        "step_size":10,
-        "gamma":0.01
+        "step_size":trial.suggest_int("step_size", low=6, high=20, step=2) if do else 5,
+        "gamma":trial.suggest_float(name="gamma", low=1e-5, high=1e-1, log=True) if do else 0.1
         # "name":"exp", "gamma":0.985,
         # "name":"cos", "T_max":50, "eta_min":1e-5,
         # "name":"plateau", "mode":'min', "factor":.5,"verbose":True
@@ -561,17 +591,241 @@ if __name__ == '__main__':
         "verbose":True,
         "min_delta":0.
     }
-    early_stopper = EarlyStopping(copy.deepcopy(early_stopping_pars))
+    early_stopper = EarlyStopping(copy.deepcopy(early_stopping_pars),verbose)
 
     # ================== RUN ===================
-    main_pars = {
-        "epochs":50,
-        "beta":"step",
-        "final_model_dir":"new_run/",
-        "checkpoint_dir":None
-    }
-    run(main_pars,device,model,loss,optimizer,scheduler,early_stopper)
+
+    final_model_dir = make_dir_for_run(working_dir, trial.number,{
+        **main_pars,**model_pars,**loss_pars,
+        **optimizer_pars,**scheduler_pars,**early_stopping_pars
+    }, verbose)
+
+    main_pars["final_model_dir"] = final_model_dir
+    main_pars["checkpoint_dir"] = None # final_model_dir
+
+    # ==================== DATA ====================
+
+    train_loader, valid_loader = dataset.get_dataloader(
+        test_split=.2,
+        batch_size=main_pars["batch_size"]
+    )
+
+    # =================== TRAIN & TEST ===================
+
+    epochs = main_pars["epochs"]
+    beta = main_pars["beta"] # or 'step'
+    time_start = datetime.datetime.now()
+    train_loss = {key: [] for key in ["KL_latent", "BCE", "MSE", "Loss"]}
+    valid_loss  = {key: [] for key in ["KL_latent", "BCE", "MSE", "Loss"]}
+    valid_mse  = {key: [] for key in ["sum", "mean"]}
+    epoch, num_steps = 0, 0
+    for epoch in range(epochs):
+        e_time = datetime.datetime.now()
+        if verbose:
+            print(f"-----| Epoch {epoch}/{epochs} | Train/Valid {len(train_loader)}/{len(valid_loader)} |-------")
+
+        beta = beta_scheduler(beta, epoch) # Scheduler for beta value
+
+        # ------------- Train -------------
+        model.train() # set model into training mode
+        losses = []
+        for i, (data, label, data_phys, label_phys) in enumerate(train_loader):
+            num_steps += 1
+            data = data.to(device)
+            label = label.to(device)
+
+            optimizer.zero_grad() # Resets the gradients of all optimized tensors
+            xhat, mu, logvar, z = model(data, label) # Forward pass only to get logits/output (evaluate model)
+            loss = loss_cvae(data, xhat, mu, logvar, beta) # compute/store loss
+            loss.backward() # computes dloss/dx for every parameter x which has requires_grad=True.
+            optimizer.step() # perform a single optimization step
+            losses.append(loss.item())
+        train_loss['Loss'].append(np.sum(losses)/len(dataset.train_sampler))
+        if verbose:
+            print(f"\t Train loss: {train_loss['Loss'][-1]:.2e}")
+        if (not np.isfinite(train_loss['Loss'][-1])):
+            return 1e10 # large number
+        # ------------- Validate -------------
+        model.eval()
+        losses, mse_mean, mse_sum = [], [], []
+        with torch.no_grad():
+            for i, (data, label, data_phys, label_phys) in enumerate(valid_loader):
+                data = data.to(device)
+                label = label.to(device)
+                xhat, mu, logvar, z = model(data, label) # evaluate model on the data
+                loss = loss_cvae(data, xhat, mu, logvar, beta) #  computes dloss/dx requires_grad=False
+                mse_mean.append(np.sqrt(F.mse_loss(xhat, data, reduction="mean").item()))
+                mse_sum.append(np.sqrt(F.mse_loss(xhat, data, reduction="sum").item()))
+                losses.append(loss.item())
+
+        # all_y = torch.from_numpy(dataset.lcs_log_norm).to(torch.float), # .to(self.device)
+        # all_x = torch.from_numpy(dataset.pars_normed).to(torch.float)
+
+        # xhat, _, _, _ = model(all_y, all_x) # evaluate model on the data
+        # mse_sum_ = np.sqrt(F.mse_loss(xhat, all_x, reduction="sum").item())
+        # mse_sum__ = np.sum(mse_sum)
+
+        # valid_loss['Loss'].append(losses / len(valid_loader) * dataset.batch_size)
+        # valid_mse["mean"].append(np.sum(mse_mean)/len(valid_loader))
+        # valid_mse["sum"].append(np.sum(mse_sum)/len(valid_loader))
+        valid_loss['Loss'].append(np.sum(losses) / len(dataset.valid_sampler))
+        if (not np.isfinite(train_loss['Loss'][-1])):
+            return 1e10 # large number
+        # ----------- Evaluate ------------
+        # num_samples = 10
+        # all_y = torch.from_numpy(dataset.lcs_log_norm).to(torch.float).to(device)
+        # all_x = torch.from_numpy(dataset.pars_normed).to(torch.float).to(device)
+        # model.eval()
+        # y_pred = torch.empty_like(all_y)
+        # with torch.no_grad():
+        #     for k in range(len(all_x)):
+        #         multi_recon = torch.empty((num_samples, len(dataset.lcs[0])))
+        #         for i in range(num_samples):
+        #             z = torch.randn(1, model.z_dim).to(device).to(torch.float)
+        #             x = all_x[k:k+1].to(torch.float)
+        #             z1 = torch.cat((z, x), dim=1)
+        #             recon = model.decoder(z1)
+        #             multi_recon[i] = recon
+        #         mean = torch.mean(multi_recon, axis=0)
+        #         y_pred[k] = mean
+        # errors = (torch.sum(
+        #     torch.abs(dataset.inverse_transform_lc_log(all_y)
+        #               - dataset.inverse_transform_lc_log(y_pred)), axis=1)
+        #           /torch.sum( dataset.inverse_transform_lc_log(all_y),axis=1))
+        # torch.save(y_pred, './'+ARGS.exp_name+'/test_predictions.pt')
+        # torch.save(errors, './'+ARGS.exp_name+'/test_epsilons.pt')
+
+        if verbose:
+            print(f"\t Valid loss: {valid_loss['Loss'][-1]:.2e}")
+                  # f"<RMSE> {valid_mse['mean'][-1]:.2e} sum(RMSE)={valid_mse['sum'][-1]:.2e}")
+
+        # ------------- Update -------------
+        if not (scheduler is None):
+            if scheduler.__class__.__name__ == 'ReduceLROnPlateau':
+                scheduler.step(valid_loss['Loss'][-1])
+            else:
+                scheduler.step()
+
+        epoch_time = datetime.datetime.now() - e_time
+        elap_time = datetime.datetime.now() - time_start
+        if verbose:
+            print(f"\t Time={elap_time.seconds/60:.2f} m  Time/Epoch={epoch_time.seconds:.2f} s ")
+
+        # ------------- Save chpt -------------
+        if not main_pars["checkpoint_dir"] is None:
+            fname = '%s_%d.chkpt' % (main_pars["checkpoint_dir"], epoch)
+            if verbose: print("\t Saving checkpoint")
+            torch.save({
+                'epoch': epoch,
+                'model_state_dict': model.state_dict(),
+                'optimizer_state_dict': optimizer.state_dict(),
+                'beta': beta_scheduler(beta, epoch),
+                'train_losses':train_loss['Loss'][-1],
+                'valid_losses':valid_loss['Loss'][-1],
+                'train_batch': len(train_loader),
+                'test_batch':len(valid_loader)
+            }, fname)
+
+        # ------------- Stop if -------------
+        if (early_stopper(valid_loss['Loss'][-1])):
+            break
+
+        # ------------- Prune -------------
+        trial.report(valid_loss['Loss'][-1], epoch)
+        if trial.should_prune():
+            raise optuna.exceptions.TrialPruned()
+
+    # =================== SAVE ===================
+
+    if not main_pars["final_model_dir"] is None:
+        fname = main_pars["final_model_dir"] + "model.pt"
+        if verbose: print(f"Saving model {fname}")
+        torch.save({
+            'model_state_dict':model.state_dict(),
+            'optimizer_state_dict': optimizer.state_dict(),
+            'train_losses': train_loss,
+            'valid_losses': valid_loss,
+            'metadata':{
+                "batch_size":main_pars["batch_size"],
+                "beta":beta,
+                "epochs":epochs,
+                "last_epoch":epoch},
+            "dataset":{
+                "x_transform":"minmax",
+                "y_transform":"log_minmax"
+            }
+        }, fname)
+
+        if verbose: print(f"Saving loss history")
+        res = {"train_losses":train_loss["Loss"], "valid_losses":valid_loss["Loss"]}
+        pd.DataFrame.from_dict(res).to_csv(fname.replace('.pt','_loss_history.csv'), index=False)
+
+    # ================== CLEAR ==========s=========
+
+    model.apply(reset_weights)
 
     # ================= ANALYZE ================
 
-    analyze(dataset,model,device,final_model_dir)
+    rmse = analyze(dataset,model,device,final_model_dir,verbose)
+    if (not np.isfinite(rmse)):
+        return 1e10 # large number
+    return rmse
+
+
+
+if __name__ == '__main__':
+
+    working_dir = os.getcwd() + '/'
+
+    dataset = LightCurveDataset()
+    dataset.load_normalize_data(working_dir, "minmax", None)
+
+    # Create an Optuna study to maximize test accuracy
+    study = optuna.create_study(direction="minimize")
+    study.optimize(objective,
+                   n_trials=1000,
+                   callbacks=[lambda study, trial: gc.collect()])
+
+    print("Study completed successfully. Saving study")
+    fpath = working_dir + "study.pkl"
+    joblib.dump(study, fpath)
+
+    # Find number of pruned and completed trials
+    pruned_trials = study.get_trials(deepcopy=False, states=[TrialState.PRUNED])
+    complete_trials = study.get_trials(deepcopy=False, states=[TrialState.COMPLETE])
+
+    with open(working_dir+"summary.txt", 'w') as file:
+        # Display the study statistics
+        file.write("\nStudy statistics: \n")
+        file.write(f"  Number of finished trials: {len(study.trials)}\n")
+        file.write(f"  Number of pruned trials: {len(pruned_trials)}\n")
+        file.write(f"  Number of complete trials: {len(complete_trials)}\n")
+
+        trial = study.best_trial
+        file.write("\nBest trial:\n")
+        file.write(f"  Value: {trial.value}\n")
+        file.write(f"  Numer: {trial.number}\n")
+        file.write("  Params: \n")
+        for key, value in trial.params.items():
+            file.write("    {}: {}\n".format(key, value))
+
+        # Find the most important hyperparameters
+        most_important_parameters = optuna.importance.get_param_importances(study, target=None)
+        # Display the most important hyperparameters
+        file.write('\nMost important hyperparameters:\n')
+        for key, value in most_important_parameters.items():
+            file.write('  {}:{}{:.2f}%\n'.format(key, (15-len(key))*' ', value*100))
+
+    # Save results to csv file
+    df = study.trials_dataframe().drop(['datetime_start',
+                                        'datetime_complete',
+                                        'duration'], axis=1)  # Exclude columns
+    df = df.loc[df['state'] == 'COMPLETE']        # Keep only results that did not prune
+    df = df.drop('state', axis=1)                 # Exclude state column
+    df = df.sort_values('value')                  # Sort based on accuracy
+    df.to_csv('optuna_results.csv', index=False)  # Save to csv file
+
+    # Display results in a dataframe
+    print("\nOverall Results (ordered by loss):\n {}".format(df))
+
+
