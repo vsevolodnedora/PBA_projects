@@ -18,6 +18,7 @@ rsync -arvP --append ./{optuna_train.py,model_cvae.py,X.h5,Y.h5} vnedora@urash.g
 from typing import Dict, Any
 import hashlib
 import joblib
+import time
 
 import copy
 import gc,os,h5py,json,datetime,numpy as np
@@ -25,7 +26,10 @@ import pandas as pd
 from sklearn.metrics import root_mean_squared_error
 
 import optuna
+from optuna.pruners import BasePruner
 from optuna.trial import TrialState
+from optuna.storages import RetryFailedTrialCallback
+
 
 import matplotlib.pyplot as plt
 from matplotlib.colors import LogNorm
@@ -48,6 +52,26 @@ torch.manual_seed(SEED)
 torch.cuda.manual_seed(SEED)
 torch.backends.cudnn.deterministic = True
 torch.backends.cudnn.enabled = False  # Disable cuDNN use of nondeterministic algorithms
+
+class TimoutPruner(BasePruner):
+    def __init__(self, max_sec_per_trial=20.*60.):
+        self._max_sec_per_trial = max_sec_per_trial
+
+    def prune(self, study, trial) -> bool:
+
+        step = trial.last_step
+
+        if not step:
+            # initialize timestamp
+            self.start_time = time.time()
+
+        else:  # trial.last_step == None when no scores have been reported yet
+            if time.time() - self.start_time > self._max_sec_per_trial:
+                print(f"This trial takes more than {self._max_sec_per_trial} "
+                      f"seconds ({self._max_sec_per_trial/60.} min)")
+                return True
+
+        return False
 
 class LightCurveDataset(Dataset):
     """
@@ -209,10 +233,22 @@ class EarlyStopping:
 
 def select_optimizer(model, pars:dict)->torch.optim:
     if (pars["name"]=="Adam"):
-        optimizer = torch.optim.Adam(model.parameters(), lr=pars["lr"])
+        optimizer = torch.optim.Adam(model.parameters(),
+                                     lr=pars["lr"],
+                                     eps=pars["eps"],
+                                     weight_decay=pars["weight_decay"])
     elif (pars["name"]=="SGD"):
-        optimizer = torch.optim.SGD(model.parameters(), lr=pars["lr"],
-                                    momentum=pars["momentum"], nesterov=True)
+        optimizer = torch.optim.SGD(model.parameters(),
+                                    lr=pars["lr"],
+                                    momentum=pars["momentum"],
+                                    weight_decay=pars["weight_decay"])
+    elif (pars["name"]=="RMSprop"):
+        optimizer = torch.optim.RMSprop(model.parameters(),
+                                        lr=pars["lr"],
+                                        momentum=pars["momentum"],
+                                        eps=pars["eps"],
+                                        weight_decay=pars["weight_decay"],
+                                        alpha=pars["alpha"])
     else:
         raise NameError("Optimizer is not recognized")
     return optimizer
@@ -222,13 +258,17 @@ def select_scheduler(optimizer, pars:dict)->optim.lr_scheduler or None:
     lr_sch = pars["name"]
     del pars["name"]
     if lr_sch == 'step':
-        scheduler = optim.lr_scheduler.StepLR(optimizer, **pars)
+        scheduler = optim.lr_scheduler.StepLR(optimizer,
+                                              step_size=pars["step_size"], gamma=pars["gamma"])
     elif lr_sch == 'exp':
-        scheduler = optim.lr_scheduler.ExponentialLR(optimizer,**pars)
+        scheduler = optim.lr_scheduler.ExponentialLR(optimizer,
+                                                     gamma=pars["gamma"])
     elif lr_sch == 'cos':
-        scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer,**pars)
+        scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer,
+                                                         T_max=pars["T_max"])
     elif lr_sch == 'plateau':
-        scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer,**pars)
+        scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer,
+                                                         mode=pars["mode"],factor=pars["factor"])
     else:
         scheduler = None
     return scheduler
@@ -281,21 +321,35 @@ def beta_scheduler(beta, epoch, beta0=0., step=50, gamma=0.1):
         return np.float32(beta)
 
 class Loss:
-    def __init__(self, pars):
+    def __init__(self, pars, device, verbose):
+        self.device = device
+        self.verbose = verbose
         self.pars = pars
     def __call__(self, x, xhat, mu, logvar, beta):
         pars = self.pars
+
+
+
         if pars["mse_or_bce"]=="mse":   base = F.mse_loss(xhat, x, reduction=pars["reduction"])
         elif pars["mse_or_bce"]=="bce": base = F.binary_cross_entropy(xhat, x, reduction=pars["reduction"])
         else: base = 0
 
         kld_l = -0.5 * torch.sum(1. + logvar - mu.pow(2) - logvar.exp())
+
         if pars["kld_norm"]: kld_l = kld_l / x.shape[0]
         if pars["use_beta"]: kld_l *= beta
 
-        loss = base + kld_l
+        # loss = base + kld_l
 
-        return loss
+
+        # if self.verbose and not torch.isfinite(base):
+        #     print(f"Error in base loss value: {loss.item()} base={base.item()} kld_norm={kld_l.item()} beta={beta}")
+        #     base = torch.tensor(1.e3, dtype=torch.float32).to(self.device)
+        # if self.verbose and not torch.isfinite(kld_l):
+        #     print(f"Error in KL loss value: {loss.item()} base={base.item()} kld_norm={kld_l.item()} beta={beta}")
+        #     kld_l = torch.tensor(1.e3, dtype=torch.float32).to(self.device)
+
+        return base + kld_l
 
 
 def reset_weights(m):
@@ -536,240 +590,256 @@ def make_dir_for_run(working_dir, trial, dict_, verbose):
         json.dump(dict_, outfile)
     return final_model_dir
 
-def objective(trial:optuna.trial.Trial):
-    # ------------------------------
-    do = True
-    verbose = False
-    print(f"TRIAL {trial.number}")
-    # ------------------------------
 
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    if device.type == 'cuda':
-        torch.cuda.empty_cache()
-        print("Running on GPU")
-    else:
-        print("Running on CPU")
+class Objective:
+    def __init__(self, dataset):
+        self.dataset = dataset
+    def __call__(self, trial:optuna.trial.Trial):
+        # ------------------------------
+        do = True
+        verbose = False
+        print(f"TRIAL {trial.number}")
+        # ------------------------------
 
-    # =================== INIT ===================
-    main_pars = {
-        "batch_size":trial.suggest_int("batch_size", low=16, high=128, step=8) if do else 32,
-        "epochs":100,
-        "beta":"step"
-    }
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        if device.type == 'cuda':
+            torch.cuda.empty_cache()
+            print("Running on GPU")
+        else:
+            print("Running on CPU")
+        # device="cpu"
 
-    model_pars = {"name":"Kamile_CVAE",
-                  "image_size":len(dataset.lcs[0]),
-                  "hidden_dim": trial.suggest_int("hidden_dim", low=50, high=1000, step=10) if do else 200,
-                  "z_dim": trial.suggest_int("z_dim", low=4, high=64, step=4) if do else len(dataset.features_names),
-                  "c":len(dataset.features_names),
-                  "init_weights":True
-                  }
-    model = select_model(device, copy.deepcopy(model_pars), verbose)
-    loss_pars = {
-        "mse_or_bce":trial.suggest_categorical(name="mse_or_bce",choices=["mse","bce"]) if do else "mse",
-        "reduction":trial.suggest_categorical(name="reduction",choices=["sum","mean"]) if do else "sum",
-        "kld_norm":trial.suggest_categorical(name="kld_norm",choices=[True,False]) if do else True,
-        "use_beta":trial.suggest_categorical(name="use_beta",choices=[True,False]) if do else True,
-    }
-    loss_cvae = Loss(loss_pars)
-    optimizer_pars = {
-        "name":"Adam",
-        "lr":trial.suggest_float(name="lr", low=1.e-6, high=1.e-2, log=True) if do else 1.e-2
-    }
-    optimizer = select_optimizer(model, copy.deepcopy(optimizer_pars))
-    scheduler_pars = {
-        "name":"step",
-        "step_size":trial.suggest_int("step_size", low=6, high=20, step=2) if do else 5,
-        "gamma":trial.suggest_float(name="gamma", low=1e-5, high=1e-1, log=True) if do else 0.1
-        # "name":"exp", "gamma":0.985,
-        # "name":"cos", "T_max":50, "eta_min":1e-5,
-        # "name":"plateau", "mode":'min', "factor":.5,"verbose":True
-    }
-    scheduler = select_scheduler(optimizer, copy.deepcopy(scheduler_pars))
-    early_stopping_pars = {
-        "patience":5,
-        "verbose":True,
-        "min_delta":0.
-    }
-    early_stopper = EarlyStopping(copy.deepcopy(early_stopping_pars),verbose)
+        # =================== INIT ===================
+        main_pars = {
+            "batch_size":trial.suggest_int("batch_size", low=16, high=128, step=8) if do else 32,
+            "epochs":150,
+            "beta":"step"
+        }
 
-    # ================== RUN ===================
+        model_pars = {"name":"Kamile_CVAE",
+                      "image_size":len(self.dataset.lcs[0]),
+                      "hidden_dim": trial.suggest_int("hidden_dim", low=50, high=1000, step=10) if do else 200,
+                      "z_dim": trial.suggest_int("z_dim", low=4, high=64, step=4) if do else len(self.dataset.features_names),
+                      "c":len(self.dataset.features_names),
+                      "init_weights":True
+                      }
+        model = select_model(device, copy.deepcopy(model_pars), verbose)
+        loss_pars = {
+            "mse_or_bce":trial.suggest_categorical(name="mse_or_bce",choices=["mse","bce"]) if do else "mse",
+            "reduction": trial.suggest_categorical(name="reduction",choices=["sum","mean"]) if do else "sum",
+            "kld_norm":  trial.suggest_categorical(name="kld_norm",choices=[True,False]) if do else True,
+            "use_beta":  trial.suggest_categorical(name="use_beta",choices=[True,False]) if do else True,
+        }
+        loss_cvae = Loss(loss_pars, device, verbose=True)
+        optimizer_pars = {
+            "name":    trial.suggest_categorical(name="optimizer", choices=["Adam", "SGD"]) if do else "Adam",
+            "lr":      trial.suggest_float(name="lr", low=1.e-5, high=1.e-2, log=False) if do else 1.e-2,
+            "momentum":trial.suggest_categorical(name="momentum", choices=[0.0001,0.001,0.01,0.1,0.]) if do else 0.,
+            "eps":     trial.suggest_categorical(name="eps", choices=[0.0001,0.001,0.01,0.1,0.]) if do else 0.,
+            "weight_decay":trial.suggest_categorical(name="weight_decay", choices=[0.0001,0.001,0.01,0.1,0.]) if do else 0.,
+            "alpha":  trial.suggest_categorical(name="alpha", choices=[0.0001,0.001,0.01,0.1,0.]) if do else 0.,
+        }
+        optimizer = select_optimizer(model, copy.deepcopy(optimizer_pars))
 
-    final_model_dir = make_dir_for_run(working_dir, trial.number,{
-        **main_pars,**model_pars,**loss_pars,
-        **optimizer_pars,**scheduler_pars,**early_stopping_pars
-    }, verbose)
+        scheduler_pars = {
+            "name":trial.suggest_categorical(name="scheduler",choices=["step","exp","cos","plateau"]) if do else "step",
+            "step_size":trial.suggest_int(name="step_size", low=2, high=50, step=2) if do else 5,
+            "gamma":trial.suggest_float(name="gamma", low=1.e-3, high=0.985, log=False) if do else 0.1,
+            "T_max":trial.suggest_int(name="T_max", low=10, high=100,step=10) if do else 50,
+            "mode":'min',"factor":.5
+            # "name":"exp", "gamma":0.985,
+            # "name":"cos", "T_max":50, "eta_min":1e-5,
+            # "name":"plateau", "mode":'min', "factor":.5,"verbose":True
+        }
+        scheduler = select_scheduler(optimizer, copy.deepcopy(scheduler_pars))
+        early_stopping_pars = {
+            "patience":5,
+            "verbose":True,
+            "min_delta":0.
+        }
+        early_stopper = EarlyStopping(copy.deepcopy(early_stopping_pars),verbose)
 
-    main_pars["final_model_dir"] = final_model_dir
-    main_pars["checkpoint_dir"] = None # final_model_dir
+        # ================== RUN ===================
 
-    # ==================== DATA ====================
+        final_model_dir = make_dir_for_run(working_dir, trial.number,{
+            **main_pars,**model_pars,**loss_pars,
+            **optimizer_pars,**scheduler_pars,**early_stopping_pars
+        }, verbose)
 
-    train_loader, valid_loader = dataset.get_dataloader(
-        test_split=.2,
-        batch_size=main_pars["batch_size"]
-    )
+        main_pars["final_model_dir"] = final_model_dir
+        main_pars["checkpoint_dir"] = None # final_model_dir
 
-    # =================== TRAIN & TEST ===================
+        # ==================== DATA ====================
 
-    epochs = main_pars["epochs"]
-    beta = main_pars["beta"] # or 'step'
-    time_start = datetime.datetime.now()
-    train_loss = {key: [] for key in ["KL_latent", "BCE", "MSE", "Loss"]}
-    valid_loss  = {key: [] for key in ["KL_latent", "BCE", "MSE", "Loss"]}
-    valid_mse  = {key: [] for key in ["sum", "mean"]}
-    epoch, num_steps = 0, 0
-    for epoch in range(epochs):
-        e_time = datetime.datetime.now()
-        if verbose:
-            print(f"-----| Epoch {epoch}/{epochs} | Train/Valid {len(train_loader)}/{len(valid_loader)} |-------")
+        train_loader, valid_loader = self.dataset.get_dataloader(
+            test_split=.2,
+            batch_size=main_pars["batch_size"]
+        )
 
-        beta = beta_scheduler(beta, epoch) # Scheduler for beta value
+        # =================== TRAIN & TEST ===================
 
-        # ------------- Train -------------
-        model.train() # set model into training mode
-        losses = []
-        for i, (data, label, data_phys, label_phys) in enumerate(train_loader):
-            num_steps += 1
-            data = data.to(device)
-            label = label.to(device)
+        epochs = main_pars["epochs"]
+        beta = main_pars["beta"] # or 'step'
+        time_start = datetime.datetime.now()
+        train_loss = {key: [] for key in ["KL_latent", "BCE", "MSE", "Loss"]}
+        valid_loss  = {key: [] for key in ["KL_latent", "BCE", "MSE", "Loss"]}
+        epoch, num_steps = 0, 0
+        for epoch in range(epochs):
+            e_time = datetime.datetime.now()
+            if verbose:
+                print(f"-----| Epoch {epoch}/{epochs} | Train/Valid {len(train_loader)}/{len(valid_loader)} |-------")
 
-            optimizer.zero_grad() # Resets the gradients of all optimized tensors
-            xhat, mu, logvar, z = model(data, label) # Forward pass only to get logits/output (evaluate model)
-            loss = loss_cvae(data, xhat, mu, logvar, beta) # compute/store loss
-            loss.backward() # computes dloss/dx for every parameter x which has requires_grad=True.
-            optimizer.step() # perform a single optimization step
-            losses.append(loss.item())
-        train_loss['Loss'].append(np.sum(losses)/len(dataset.train_sampler))
-        if verbose:
-            print(f"\t Train loss: {train_loss['Loss'][-1]:.2e}")
-        if (not np.isfinite(train_loss['Loss'][-1])):
-            return 1e10 # large number
-        # ------------- Validate -------------
-        model.eval()
-        losses, mse_mean, mse_sum = [], [], []
-        with torch.no_grad():
-            for i, (data, label, data_phys, label_phys) in enumerate(valid_loader):
+            beta = beta_scheduler(beta, epoch) # Scheduler for beta value
+
+            # ------------- Train -------------
+            model.train() # set model into training mode
+            losses = []
+            for i, (data, label, data_phys, label_phys) in enumerate(train_loader):
+                num_steps += 1
                 data = data.to(device)
                 label = label.to(device)
-                xhat, mu, logvar, z = model(data, label) # evaluate model on the data
-                loss = loss_cvae(data, xhat, mu, logvar, beta) #  computes dloss/dx requires_grad=False
-                mse_mean.append(np.sqrt(F.mse_loss(xhat, data, reduction="mean").item()))
-                mse_sum.append(np.sqrt(F.mse_loss(xhat, data, reduction="sum").item()))
+
+                optimizer.zero_grad() # Resets the gradients of all optimized tensors
+                xhat, mu, logvar, z = model(data, label) # Forward pass only to get logits/output (evaluate model)
+                if torch.any(torch.isnan(xhat)): # check if nans
+                    raise optuna.exceptions.TrialPruned()
+                loss = loss_cvae(data, xhat, mu, logvar, beta) # compute/store loss
+                loss.backward() # computes dloss/dx for every parameter x which has requires_grad=True.
+                optimizer.step() # perform a single optimization step
                 losses.append(loss.item())
+            train_loss['Loss'].append(np.sum(losses)/len(self.dataset.train_sampler))
+            if verbose:
+                print(f"\t Train loss: {train_loss['Loss'][-1]:.2e}")
+            if (not np.isfinite(train_loss['Loss'][-1])):
+                raise optuna.exceptions.TrialPruned()
+            # ------------- Validate -------------
+            model.eval()
+            losses = []
+            with torch.no_grad():
+                for i, (data, label, data_phys, label_phys) in enumerate(valid_loader):
+                    data = data.to(device)
+                    label = label.to(device)
+                    xhat, mu, logvar, z = model(data, label) # evaluate model on the data
+                    if torch.any(torch.isnan(xhat)):
+                        raise optuna.exceptions.TrialPruned()
+                    loss = loss_cvae(data, xhat, mu, logvar, beta) #  computes dloss/dx requires_grad=False
+                    # mse_mean.append(np.sqrt(F.mse_loss(xhat, data, reduction="mean").item()))
+                    # mse_sum.append(np.sqrt(F.mse_loss(xhat, data, reduction="sum").item()))
+                    losses.append(loss.item())
 
-        # all_y = torch.from_numpy(dataset.lcs_log_norm).to(torch.float), # .to(self.device)
-        # all_x = torch.from_numpy(dataset.pars_normed).to(torch.float)
+            # all_y = torch.from_numpy(dataset.lcs_log_norm).to(torch.float), # .to(self.device)
+            # all_x = torch.from_numpy(dataset.pars_normed).to(torch.float)
 
-        # xhat, _, _, _ = model(all_y, all_x) # evaluate model on the data
-        # mse_sum_ = np.sqrt(F.mse_loss(xhat, all_x, reduction="sum").item())
-        # mse_sum__ = np.sum(mse_sum)
+            # xhat, _, _, _ = model(all_y, all_x) # evaluate model on the data
+            # mse_sum_ = np.sqrt(F.mse_loss(xhat, all_x, reduction="sum").item())
+            # mse_sum__ = np.sum(mse_sum)
 
-        # valid_loss['Loss'].append(losses / len(valid_loader) * dataset.batch_size)
-        # valid_mse["mean"].append(np.sum(mse_mean)/len(valid_loader))
-        # valid_mse["sum"].append(np.sum(mse_sum)/len(valid_loader))
-        valid_loss['Loss'].append(np.sum(losses) / len(dataset.valid_sampler))
-        if (not np.isfinite(train_loss['Loss'][-1])):
-            return 1e10 # large number
-        # ----------- Evaluate ------------
-        # num_samples = 10
-        # all_y = torch.from_numpy(dataset.lcs_log_norm).to(torch.float).to(device)
-        # all_x = torch.from_numpy(dataset.pars_normed).to(torch.float).to(device)
-        # model.eval()
-        # y_pred = torch.empty_like(all_y)
-        # with torch.no_grad():
-        #     for k in range(len(all_x)):
-        #         multi_recon = torch.empty((num_samples, len(dataset.lcs[0])))
-        #         for i in range(num_samples):
-        #             z = torch.randn(1, model.z_dim).to(device).to(torch.float)
-        #             x = all_x[k:k+1].to(torch.float)
-        #             z1 = torch.cat((z, x), dim=1)
-        #             recon = model.decoder(z1)
-        #             multi_recon[i] = recon
-        #         mean = torch.mean(multi_recon, axis=0)
-        #         y_pred[k] = mean
-        # errors = (torch.sum(
-        #     torch.abs(dataset.inverse_transform_lc_log(all_y)
-        #               - dataset.inverse_transform_lc_log(y_pred)), axis=1)
-        #           /torch.sum( dataset.inverse_transform_lc_log(all_y),axis=1))
-        # torch.save(y_pred, './'+ARGS.exp_name+'/test_predictions.pt')
-        # torch.save(errors, './'+ARGS.exp_name+'/test_epsilons.pt')
+            # valid_loss['Loss'].append(losses / len(valid_loader) * dataset.batch_size)
+            # valid_mse["mean"].append(np.sum(mse_mean)/len(valid_loader))
+            # valid_mse["sum"].append(np.sum(mse_sum)/len(valid_loader))
+            valid_loss['Loss'].append(np.sum(losses) / len(self.dataset.valid_sampler))
+            if (not np.isfinite(train_loss['Loss'][-1])):
+                raise optuna.exceptions.TrialPruned()
+            # ----------- Evaluate ------------
+            # num_samples = 10
+            # all_y = torch.from_numpy(dataset.lcs_log_norm).to(torch.float).to(device)
+            # all_x = torch.from_numpy(dataset.pars_normed).to(torch.float).to(device)
+            # model.eval()
+            # y_pred = torch.empty_like(all_y)
+            # with torch.no_grad():
+            #     for k in range(len(all_x)):
+            #         multi_recon = torch.empty((num_samples, len(dataset.lcs[0])))
+            #         for i in range(num_samples):
+            #             z = torch.randn(1, model.z_dim).to(device).to(torch.float)
+            #             x = all_x[k:k+1].to(torch.float)
+            #             z1 = torch.cat((z, x), dim=1)
+            #             recon = model.decoder(z1)
+            #             multi_recon[i] = recon
+            #         mean = torch.mean(multi_recon, axis=0)
+            #         y_pred[k] = mean
+            # errors = (torch.sum(
+            #     torch.abs(dataset.inverse_transform_lc_log(all_y)
+            #               - dataset.inverse_transform_lc_log(y_pred)), axis=1)
+            #           /torch.sum( dataset.inverse_transform_lc_log(all_y),axis=1))
+            # torch.save(y_pred, './'+ARGS.exp_name+'/test_predictions.pt')
+            # torch.save(errors, './'+ARGS.exp_name+'/test_epsilons.pt')
 
-        if verbose:
-            print(f"\t Valid loss: {valid_loss['Loss'][-1]:.2e}")
-                  # f"<RMSE> {valid_mse['mean'][-1]:.2e} sum(RMSE)={valid_mse['sum'][-1]:.2e}")
+            if verbose:
+                print(f"\t Valid loss: {valid_loss['Loss'][-1]:.2e}")
+                      # f"<RMSE> {valid_mse['mean'][-1]:.2e} sum(RMSE)={valid_mse['sum'][-1]:.2e}")
 
-        # ------------- Update -------------
-        if not (scheduler is None):
-            if scheduler.__class__.__name__ == 'ReduceLROnPlateau':
-                scheduler.step(valid_loss['Loss'][-1])
-            else:
-                scheduler.step()
+            # ------------- Update -------------
+            if not (scheduler is None):
+                if scheduler.__class__.__name__ == 'ReduceLROnPlateau':
+                    scheduler.step(valid_loss['Loss'][-1])
+                else:
+                    scheduler.step()
 
-        epoch_time = datetime.datetime.now() - e_time
-        elap_time = datetime.datetime.now() - time_start
-        if verbose:
-            print(f"\t Time={elap_time.seconds/60:.2f} m  Time/Epoch={epoch_time.seconds:.2f} s ")
+            epoch_time = datetime.datetime.now() - e_time
+            elap_time = datetime.datetime.now() - time_start
+            if verbose:
+                print(f"\t Time={elap_time.seconds/60:.2f} m  Time/Epoch={epoch_time.seconds:.2f} s ")
 
-        # ------------- Save chpt -------------
-        if not main_pars["checkpoint_dir"] is None:
-            fname = '%s_%d.chkpt' % (main_pars["checkpoint_dir"], epoch)
-            if verbose: print("\t Saving checkpoint")
+            # ------------- Save chpt -------------
+            if not main_pars["checkpoint_dir"] is None:
+                fname = '%s_%d.chkpt' % (main_pars["checkpoint_dir"], epoch)
+                if verbose: print("\t Saving checkpoint")
+                torch.save({
+                    'epoch': epoch,
+                    'model_state_dict': model.state_dict(),
+                    'optimizer_state_dict': optimizer.state_dict(),
+                    'beta': beta_scheduler(beta, epoch),
+                    'train_losses':train_loss['Loss'][-1],
+                    'valid_losses':valid_loss['Loss'][-1],
+                    'train_batch': len(train_loader),
+                    'test_batch':len(valid_loader)
+                }, fname)
+
+            # ------------- Stop if -------------
+            if (early_stopper(valid_loss['Loss'][-1])):
+                break
+
+            # ------------- Prune -------------
+            trial.report(valid_loss['Loss'][-1], epoch)
+            if trial.should_prune():
+                raise optuna.exceptions.TrialPruned()
+
+        # =================== SAVE ===================
+
+        if not main_pars["final_model_dir"] is None:
+            fname = main_pars["final_model_dir"] + "model.pt"
+            if verbose: print(f"Saving model {fname}")
             torch.save({
-                'epoch': epoch,
-                'model_state_dict': model.state_dict(),
+                'model_state_dict':model.state_dict(),
                 'optimizer_state_dict': optimizer.state_dict(),
-                'beta': beta_scheduler(beta, epoch),
-                'train_losses':train_loss['Loss'][-1],
-                'valid_losses':valid_loss['Loss'][-1],
-                'train_batch': len(train_loader),
-                'test_batch':len(valid_loader)
+                'train_losses': train_loss,
+                'valid_losses': valid_loss,
+                'metadata':{
+                    "batch_size":main_pars["batch_size"],
+                    "beta":beta,
+                    "epochs":epochs,
+                    "last_epoch":epoch},
+                "dataset":{
+                    "x_transform":"minmax",
+                    "y_transform":"log_minmax"
+                }
             }, fname)
 
-        # ------------- Stop if -------------
-        if (early_stopper(valid_loss['Loss'][-1])):
-            break
+            if verbose: print(f"Saving loss history")
+            res = {"train_losses":train_loss["Loss"], "valid_losses":valid_loss["Loss"]}
+            pd.DataFrame.from_dict(res).to_csv(fname.replace('.pt','_loss_history.csv'), index=False)
 
-        # ------------- Prune -------------
-        trial.report(valid_loss['Loss'][-1], epoch)
-        if trial.should_prune():
+        # ================== CLEAR ==========s=========
+
+        model.apply(reset_weights)
+
+        # ================= ANALYZE ================
+
+        rmse = analyze(dataset,model,device,final_model_dir,verbose)
+        if (not np.isfinite(rmse)):
             raise optuna.exceptions.TrialPruned()
-
-    # =================== SAVE ===================
-
-    if not main_pars["final_model_dir"] is None:
-        fname = main_pars["final_model_dir"] + "model.pt"
-        if verbose: print(f"Saving model {fname}")
-        torch.save({
-            'model_state_dict':model.state_dict(),
-            'optimizer_state_dict': optimizer.state_dict(),
-            'train_losses': train_loss,
-            'valid_losses': valid_loss,
-            'metadata':{
-                "batch_size":main_pars["batch_size"],
-                "beta":beta,
-                "epochs":epochs,
-                "last_epoch":epoch},
-            "dataset":{
-                "x_transform":"minmax",
-                "y_transform":"log_minmax"
-            }
-        }, fname)
-
-        if verbose: print(f"Saving loss history")
-        res = {"train_losses":train_loss["Loss"], "valid_losses":valid_loss["Loss"]}
-        pd.DataFrame.from_dict(res).to_csv(fname.replace('.pt','_loss_history.csv'), index=False)
-
-    # ================== CLEAR ==========s=========
-
-    model.apply(reset_weights)
-
-    # ================= ANALYZE ================
-
-    rmse = analyze(dataset,model,device,final_model_dir,verbose)
-    if (not np.isfinite(rmse)):
-        return 1e10 # large number
-    return rmse
+        return rmse
+        # return np.random.randn()
 
 
 
@@ -781,9 +851,11 @@ if __name__ == '__main__':
     dataset.load_normalize_data(working_dir, "minmax", None)
 
     # Create an Optuna study to maximize test accuracy
+    # pruner = TimoutPruner(max_sec_per_trial=20.*60.)
     study = optuna.create_study(direction="minimize")
-    study.optimize(objective,
-                   n_trials=1000,
+                                # pruner=pruner)
+    study.optimize(Objective(dataset),
+                   n_trials=2000,
                    callbacks=[lambda study, trial: gc.collect()])
 
     print("Study completed successfully. Saving study")

@@ -256,11 +256,16 @@ class Base():
     def __init__(self, default_parfile_fpath, workingdir):
         if not os.path.isdir(workingdir):
             raise IOError(f"Workingdir dir does not exists: {workingdir}")
+
         self.workingdir = workingdir
+
         if not os.path.isfile(default_parfile_fpath):
             raise IOError(f"default_parfile_fpath not exists: {default_parfile_fpath}")
+
         self.default_parfile_fpath = default_parfile_fpath
+
         self.pba_src = "/home/vsevolod/Work/GIT/GitHub/PyBlastAfterglowMag/src/pba.out"
+
         self.loglevel= "info"
 
     def run_pw(self, pars : dict, struct : dict, opts : dict, opts_grb : dict) -> pba.interface.PyBlastAfterglow:
@@ -270,8 +275,10 @@ class Base():
         if (self.default_parfile_fpath!=self.workingdir+parfilefname):
             shutil.copy(self.default_parfile_fpath, self.workingdir+parfilefname)
         # prepare initial data
-        pba_id = pba.id_analytic.JetStruct(n_layers_pw=struct["nlayers_pw"], n_layers_a=struct["nlayers_a"])
-        id_fname = "grb_id.h5"
+        pba_id = pba.id_analytic.JetStruct(n_layers_pw=struct["nlayers_pw"],
+                                           n_layers_a=struct["nlayers_a"])
+        id_fname = opts_grb.get("fname_ejecta_id", "grb_id.h5")
+        opts_grb["fname_ejecta_id"] = id_fname
         id_dict, id_pars = pba_id.get_1D_id(pars=struct,type="piece-wise")
         pba_id.save_1d_id(id_dict=id_dict, id_pars=id_pars, outfpath=self.workingdir+id_fname)
 
@@ -307,12 +314,14 @@ class Base():
         # workdir = os.getcwd()+'/'
         parfilefname = self.default_parfile_fpath.split("/")[-1]
         # copy the main parfile into workdir
-        if (self.default_parfile_fpath!=self.workingdir+parfilefname):
+        if (self.default_parfile_fpath != self.workingdir+parfilefname):
             shutil.copy(self.default_parfile_fpath, self.workingdir+parfilefname)
         # prepare initial data
-        pba_id = pba.id_analytic.JetStruct(n_layers_pw=struct["nlayers_pw"], n_layers_a=struct["nlayers_a"])
+        pba_id = pba.id_analytic.JetStruct(n_layers_pw=struct["nlayers_pw"],
+                                           n_layers_a=struct["nlayers_a"])
         id_dict, id_pars = pba_id.get_1D_id(pars=struct,type="adaptive")
-        id_fname = "grb_id.h5"
+        id_fname = opts_grb.get("fname_ejecta_id", "grb_id.h5")
+        opts_grb["fname_ejecta_id"] = id_fname
         pba_id.save_1d_id(id_dict=id_dict, id_pars=id_pars, outfpath=self.workingdir+id_fname)
 
         # modify parfile
@@ -338,6 +347,7 @@ class Base():
         # remove the default parfile from the working dir
         if (self.default_parfile_fpath!=self.workingdir+parfilefname):
             os.remove(self.workingdir+parfilefname)
+
         return pba_a
 
     def plot_lcs(self, ax, pars : dict, pba : pba.interface.PyBlastAfterglow, layers = (), plot={}, plot_layer={}):
@@ -388,14 +398,14 @@ class CasesFS(Base):
         #     raise NotADirectoryError(f"Dire for figs is not found {figsdir}")
         # self.figsdir = figsdir
 
-    def plot_lcs_ref(self, ax, ref : RefDataLC, nlayers : int, layers = (),):
-        cmap = cm.get_cmap('Greys_r')
+    def plot_lcs_ref(self, ax, ref : RefDataLC, nlayers : int, ls='-', layers = (), label=r"\texttt{afterglowpy}"):
+        cmap = cm.get_cmap('Greys')
         norm = Normalize(vmin=-50,vmax=60)
         nlayers = ref.nlayers()
         nlayers_a = int(nlayers)
         if (int(nlayers)!=int(nlayers_a)):
             raise ValueError(f"For ref deta expected nlayers={nlayers_a} got nlayer={nlayers}")
-        ax.plot(ref.times(), ref.get(-1), ls='-', color='black', lw=0.9, zorder=-1, label=r"\texttt{afterglowpy}")
+        ax.plot(ref.times(), ref.get(-1), ls=ls, color='black', label=label, zorder=-1)
         for il in range(int(nlayers)):
             if (((len(layers) > 0) and (il in layers)) or (len(layers)==0)):
                 # --- plot ref data
@@ -416,7 +426,7 @@ class CasesFS(Base):
                 ax.plot(x_arr, ref.get(il, v_n_y), ls=':', color=cmap(norm(il)), zorder=-1)
 
     def plot_generic(self, axes, pars : dict, opts_a : dict, struct : dict,
-                           ref_dyn_fname : str, ref_lc_fname : str):
+                           ref_dyn_fname : str, ref_lc_fname : str, layers=()):
         # run the code for given pars
         pba_a = self.run_a(struct=struct, pars=pars, opts={}, opts_grb=opts_a)
 
@@ -428,10 +438,10 @@ class CasesFS(Base):
                       plot_layer={"ls":'-', "cmap":"viridis", "alpha":.5})
         self.plot_lcs_ref(ax=axes[0], ref=ref_lc, nlayers=pba_a.GRB.get_lc_obj().attrs["nlayers"])
 
-        self.plot_dyn(axes[1], pba=pba_a, v_n_x="tburst", v_n_y="mom", layers=(), plot_layer={"ls":'-', "cmap":"viridis", "alpha":.8})
+        self.plot_dyn(axes[1], pba=pba_a, v_n_x="tburst", v_n_y="mom", layers=layers, plot_layer={"ls":'-', "cmap":"viridis", "alpha":.8})
         self.plot_dyn_ref(axes[1], ref=ref, v_n_x="tburst", v_n_y="mom", nlayers=pba_a.GRB.get_dyn_obj().attrs["nlayers"])
 
-        self.plot_dyn(axes[2], pba=pba_a, v_n_x="tburst", v_n_y="theta", layers=(), plot_layer={"ls":'-', "cmap":"viridis", "alpha":.8})
+        self.plot_dyn(axes[2], pba=pba_a, v_n_x="tburst", v_n_y="theta", layers=layers, plot_layer={"ls":'-', "cmap":"viridis", "alpha":.8})
         self.plot_dyn_ref(axes[2], ref=ref, v_n_x="tburst", v_n_y="theta", nlayers=pba_a.GRB.get_dyn_obj().attrs["nlayers"])
 
 
@@ -446,9 +456,9 @@ class CasesFS(Base):
              'thetaCore':   struct["theta_c"],    # Half-opening angle in radians
              'thetaWing':   struct["theta_w"],
              'n0':          pars["n_ism"],    # circumburst density in cm^{-3}
-             'p':           pars["p"],    # electron energy distribution index
-             'epsilon_e':   pars["eps_e"],    # epsilon_e
-             'epsilon_B':   pars["eps_b"],   # epsilon_B
+             'p':           pars["p_fs"],    # electron energy distribution index
+             'epsilon_e':   pars["eps_e_fs"],    # epsilon_e
+             'epsilon_B':   pars["eps_b_fs"],   # epsilon_B
              'xi_N':        1.0,    # Fraction of electrons accelerated
              'd_L':         pars["d_l"], # Luminosity distance in cm
              'z':           pars["z"]}   # redshift
@@ -459,7 +469,7 @@ class CasesFS(Base):
         Fnu = grb.fluxDensity(t, nu, **Z)
         # plot
         ax = axes[0]
-        ax.plot(t, Fnu, ls=':', color='gray', label='afterglowpy')
+        ax.plot(t, Fnu, ls='-', color='gray', label='afterglowpy')
         #
         # ax.grid()
         # ax.legend()
@@ -675,12 +685,11 @@ class CasesFS(Base):
         #     plt.savefig(figpath+".png", dpi=256)
         # if show_fig: plt.show()
 
-    def plot_170817_like(self, pars : dict, opts_a:dict, opts_pw:dict, struct : dict, title : str,
-                         figpath : str, save_pdf = True, show_fig = False):
+    def plot_170817_like(self, ax, pars : dict, opts_a:dict, opts_pw:dict, struct : dict):
         # run the code for given pars
 
 
-        fig, ax = plt.subplots(figsize=(9,2.5), ncols=1, nrows=1)
+        # fig, ax = plt.subplots(figsize=(9,2.5), ncols=1, nrows=1)
 
         # --- piece-wise
         pars_pw = copy.deepcopy(pars)
@@ -720,39 +729,39 @@ class CasesFS(Base):
              'thetaCore':   struct["theta_c"],    # Half-opening angle in radians
              'thetaWing':   struct["theta_w"],
              'n0':          pars["n_ism"],    # circumburst density in cm^{-3}
-             'p':           pars["p"],    # electron energy distribution index
-             'epsilon_e':   pars["eps_e"],    # epsilon_e
-             'epsilon_B':   pars["eps_b"],   # epsilon_B
+             'p':           pars["p_fs"],    # electron energy distribution index
+             'epsilon_e':   pars["eps_e_fs"],    # epsilon_e
+             'epsilon_B':   pars["eps_b_fs"],   # epsilon_B
              'xi_N':        1.0,    # Fraction of electrons accelerated
              'd_L':         pars["d_l"], # Luminosity distance in cm
              'z':           pars["z"]}   # redshift
 
-        t = np.geomspace(1.0 * 86400.0, 1.0e3 * 86400.0, 100)
+        t = np.geomspace(1.0 * 8640.0, 1.0e3 * 86400.0, 300)
         nu = np.empty(t.shape)
-        nu[:] = 3.0e9
+        nu[:] = pars["obs_freq"]
         Fnu = grb.fluxDensity(t, nu, **Z)
 
         # plot
-        ax.plot(t, Fnu, ls='-', color='gray', label='afterglopy')
+        ax.plot(t, Fnu, ls='-', color='gray', label='afterglowpy')
+        #
+        # ax.grid()
+        # ax.legend()
+        # ax.set_xscale("log")
+        # ax.set_yscale("log")
+        # ax.set_xlabel("time [s]", fontsize=12)
+        # ax.set_ylabel("Flux density [mJy]", fontsize=12)
+        # ax.set_title(title)
+        # ax.set_xlim(1e5,1e8)
+        # ax.set_ylim(1e-4,1)
+        # ax.grid()
+        #
+        # if not figpath is None:
+        #     print("Saving:\n {}".format(figpath))
+        #     if save_pdf: plt.savefig(figpath+".pdf")
+        #     plt.savefig(figpath+".png", dpi=256)
+        # if show_fig: plt.show()
 
-        ax.grid()
-        ax.legend()
-        ax.set_xscale("log")
-        ax.set_yscale("log")
-        ax.set_xlabel("time [s]", fontsize=12)
-        ax.set_ylabel("Flux density [mJy]", fontsize=12)
-        ax.set_title(title)
-        ax.set_xlim(1e5,1e8)
-        ax.set_ylim(1e-4,1)
-        ax.grid()
-
-        if not figpath is None:
-            print("Saving:\n {}".format(figpath))
-            if save_pdf: plt.savefig(figpath+".pdf")
-            plt.savefig(figpath+".png", dpi=256)
-        if show_fig: plt.show()
-
-    def plot_3d_stacked_skymaps(self, pars : dict, opts_a:dict, opts_pw:dict, struct : dict, title : str,
+    def plot_3d_stacked_skymaps_pw(self, pars : dict, opts_a:dict, opts_pw:dict, struct : dict,
                                 figpath : str, save_pdf = True, show_fig = False):
         # --- piece-wise
         freq = pars["obs_freq"]
@@ -774,6 +783,8 @@ class CasesFS(Base):
             plt.savefig(_figpath+".png", dpi=256)
         if show_fig: plt.show()
 
+    def plot_3d_stacked_skymaps_a(self, pars : dict, opts_a:dict, opts_pw:dict, struct : dict,
+                                figpath : str, save_pdf = True, show_fig = False):
         # --- adaptive
         freq = pars["obs_freq"]
         pars_a = copy.deepcopy(pars)
@@ -2027,9 +2038,9 @@ class CasesFSRS(Base):
              'thetaCore':   struct["theta_c"],    # Half-opening angle in radians
              'thetaWing':   struct["theta_w"],
              'n0':          pars["n_ism"],    # circumburst density in cm^{-3}
-             'p':           pars["p"],    # electron energy distribution index
-             'epsilon_e':   pars["eps_e"],    # epsilon_e
-             'epsilon_B':   pars["eps_b"],   # epsilon_B
+             'p':           pars["p_fs"],    # electron energy distribution index
+             'epsilon_e':   pars["eps_e_fs"],    # epsilon_e
+             'epsilon_B':   pars["eps_b_fs"],   # epsilon_B
              'xi_N':        1.0,    # Fraction of electrons accelerated
              'd_L':         pars["d_l"], # Luminosity distance in cm
              'z':           pars["z"]}   # redshift
@@ -2271,49 +2282,68 @@ class CasesFSRS(Base):
             _pars["mom0_frac_when_start_spread"] = 0.95
             _opts_a["do_rs"] = "yes"
             _opts_a["bw_type"] = "fsrs"
-            _opts_a["fname_dyn"]=f"dyn_fsrs_setup{isetup}.h5"
-            _opts_a["fname_light_curve"]=f"lc_fsrs_setup{isetup}.h5"
-            _opts_a["fname_light_curve_layers"]=f"lc_dense_fsrs_setup{isetup}.h5"
+            _opts_a["fname_ejecta_id"]=f"ejecta_id_setup{isetup}.h5"
+            _opts_a["fname_dyn"]=f"dyn_comp_fsrs_setup{isetup}.h5"
+            _opts_a["fname_light_curve"]=f"lc_comp_fsrs_setup{isetup}.h5"
+            _opts_a["fname_light_curve_layers"]=f"lc_comp_dense_fsrs_setup{isetup}.h5"
             for __par in setup.keys():
                 if __par in _struct.keys(): _struct[__par] = setup[__par]
                 if __par in _pars.keys(): _pars[__par] = setup[__par]
-            pba_a.append(
-                self.run_a(struct=_struct, pars=_pars, opts=opts_a, opts_grb=_opts_a)
-            )
+                # if __par in _opts_a.keys(): _opts_a[__par] = setup[__par]
+
             color = setup["color"]
             label = setup["label"]
             cmap = setup["cmap"]
-            self.plot_lcs(ax=axes[0], pars=pars, pba=pba_a[isetup], layers = layers,
+            pba_ = self.run_a(struct=_struct, pars=_pars, opts=opts_a, opts_grb=_opts_a)
+            self.plot_lcs(ax=axes[0], pars=pars, pba=pba_, layers = layers,
                           plot={"ls":'-', "color":color, "label":label},
                           plot_layer={"ls":'-.', "color":color, "alpha":.9, "vmin":-50, "vmax":60})
-            self.plot_dyn(axes[1], pba=pba_a[isetup], v_n_x="tburst", v_n_y="GammaFsh", layers=layers,
-                          plot_layer={"ls":'-', "cmap":cmap, "alpha":.9, "vmin":-50, "vmax":60})
-            self.plot_dyn(axes[2], pba=pba_a[isetup], v_n_x="tburst", v_n_y="GammaRsh", layers=layers,
-                          plot_layer={"ls":'-', "cmap":cmap, "alpha":.9, "vmin":-50, "vmax":60})
+            try:
+                self.plot_dyn(axes[1], pba=pba_, v_n_x="tburst", v_n_y="GammaFsh", layers=layers,
+                              plot_layer={"ls":'-', "cmap":cmap, "alpha":.9, "vmin":-50, "vmax":60})
+                self.plot_dyn(axes[2], pba=pba_, v_n_x="tburst", v_n_y="GammaRsh", layers=layers,
+                              plot_layer={"ls":'-', "cmap":cmap, "alpha":.9, "vmin":-50, "vmax":60})
+            except KeyError:
+                print("Error; dynamic data not found")
+
+        # pba_a.append(
+        #         self.run_a(struct=_struct, pars=_pars, opts=opts_a, opts_grb=_opts_a)
+        #     )
+        #     color = setup["color"]
+        #     label = setup["label"]
+        #     cmap = setup["cmap"]
+        #     self.plot_lcs(ax=axes[0], pars=pars, pba=pba_a[isetup], layers = layers,
+        #                   plot={"ls":'-', "color":color, "label":label},
+        #                   plot_layer={"ls":'-.', "color":color, "alpha":.9, "vmin":-50, "vmax":60})
+        #     self.plot_dyn(axes[1], pba=pba_a[isetup], v_n_x="tburst", v_n_y="GammaFsh", layers=layers,
+        #                   plot_layer={"ls":'-', "cmap":cmap, "alpha":.9, "vmin":-50, "vmax":60})
+        #     self.plot_dyn(axes[2], pba=pba_a[isetup], v_n_x="tburst", v_n_y="GammaRsh", layers=layers,
+        #                   plot_layer={"ls":'-', "cmap":cmap, "alpha":.9, "vmin":-50, "vmax":60})
 
 
 
-            _opts_a = copy.deepcopy(opts_a_grb)
-            _opts_a["do_rs"] = "no"
-            _opts_a["bw_type"] = "fs"
-            _opts_a["fname_dyn"]=f"dyn_fs_setup{isetup}.h5"
-            _opts_a["fname_light_curve"]=f"lc_fs_setup{isetup}.h5"
-            _opts_a["fname_light_curve_layers"]=f"lc_dense_fs_setup{isetup}.h5"
-            for __par in setup.keys():
-                if __par in _struct.keys(): _struct[__par] = setup[__par]
-                if __par in _pars.keys(): _pars[__par] = setup[__par]
-
-            pba_a_fs.append(
-                self.run_a(struct=struct, pars=_pars, opts=opts_a, opts_grb=_opts_a)
-            )
-            self.plot_lcs(ax=axes[0], pars=pars, pba=pba_a_fs[isetup], layers = layers,
-                          plot={"ls":'--', "color":color, "alpha":.6},
-                          plot_layer={"ls":'-.', "color":color, "alpha":.9, "vmin":-50, "vmax":60})
-            # self.plot_dyn(axes[1], pba=pba_a[isetup], v_n_x="tburst", v_n_y="GammaFsh", layers=layers,
-            #               plot_layer={"ls":'--', "cmap":cmap, "alpha":.9, "vmin":-50, "vmax":60})
-            # self.plot_dyn(axes[2], pba=pba_a[isetup], v_n_x="tburst", v_n_y="GammaRsh", layers=layers,
-            #               plot_layer={"ls":'--', "cmap":cmap, "alpha":.9, "vmin":-50, "vmax":60})
-
+            # _opts_a = copy.deepcopy(opts_a_grb)
+            # _opts_a["do_rs"] = "no"
+            # _opts_a["bw_type"] = "fs"
+            # _opts_a["fname_dyn"]=f"dyn_fs_setup{isetup}.h5"
+            # _opts_a["fname_light_curve"]=f"lc_fs_setup{isetup}.h5"
+            # _opts_a["fname_light_curve_layers"]=f"lc_dense_fs_setup{isetup}.h5"
+            # for __par in setup.keys():
+            #     if __par in _struct.keys(): _struct[__par] = setup[__par]
+            #     if __par in _pars.keys(): _pars[__par] = setup[__par]
+            #     if __par in _opts_a.keys(): _opts_a[__par] = setup[__par]
+            #
+            # pba_a_fs.append(
+            #     self.run_a(struct=struct, pars=_pars, opts=opts_a, opts_grb=_opts_a)
+            # )
+            # self.plot_lcs(ax=axes[0], pars=pars, pba=pba_a_fs[isetup], layers = layers,
+            #               plot={"ls":'--', "color":color, "alpha":.6},
+            #               plot_layer={"ls":'-.', "color":color, "alpha":.9, "vmin":-50, "vmax":60})
+            # # self.plot_dyn(axes[1], pba=pba_a[isetup], v_n_x="tburst", v_n_y="GammaFsh", layers=layers,
+            # #               plot_layer={"ls":'--', "cmap":cmap, "alpha":.9, "vmin":-50, "vmax":60})
+            # # self.plot_dyn(axes[2], pba=pba_a[isetup], v_n_x="tburst", v_n_y="GammaRsh", layers=layers,
+            # #               plot_layer={"ls":'--', "cmap":cmap, "alpha":.9, "vmin":-50, "vmax":60})
+            #
 
 
 # -----------------------------
