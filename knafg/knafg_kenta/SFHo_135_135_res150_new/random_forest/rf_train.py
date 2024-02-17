@@ -34,9 +34,6 @@ features_names = [col for col in list(df.columns) if col not in [target]] # here
 working_dir = os.getcwd() + '/' + 'rf_optuna/'
 if not os.path.isdir(working_dir): os.mkdir(working_dir)
 
-target = "flux"
-features_names = [col for col in list(df.columns) if col not in [target]] # here time is included
-
 # ---- EXTRACT DATA FROM COLLECTION ----
 
 def prep_data(df:pd.DataFrame, features_names:list):
@@ -145,7 +142,7 @@ X_norm, y_norm = data.get_normalized_train_data()
 # ---- USE OPTUNA TO STUDY
 class RFObjective():
     """
-        Class for optuna training RF model
+        Class for optuna_study training RF model
     """
 
     def __init__(self, X, y):

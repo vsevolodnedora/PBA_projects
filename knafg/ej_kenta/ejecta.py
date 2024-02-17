@@ -5,28 +5,11 @@
     to install the postprocessing/run utilities
 
 """
-import copy
 
 import numpy as np
 import h5py
-import pandas as pd
-from scipy.integrate import ode
 import matplotlib.pyplot as plt
-from scipy import interpolate
 # import pytest
-from pathlib import Path
-from matplotlib.colors import Normalize, LogNorm
-from pathlib import Path
-from matplotlib.colors import Normalize, LogNorm
-from mpl_toolkits.axes_grid1 import ImageGrid
-from mpl_toolkits.axisartist.grid_finder import MaxNLocator
-from matplotlib.colors import BoundaryNorm
-from matplotlib.ticker import MaxNLocator
-from matplotlib.colors import Normalize, LogNorm
-from matplotlib import ticker, cm, rc, rcParams
-from matplotlib.patches import Rectangle
-import matplotlib.colors as colors
-from matplotlib import cm
 from glob import glob
 import os
 import re
@@ -39,7 +22,7 @@ except ImportError:
     except:
         raise ImportError("Cannot import PyBlastAfterglowMag")
 
-from settings import *
+from knafg.knafg_kenta.old.settings import *
 
 class ProcessRaw():
     def __init__(self, simumlation : dict):
