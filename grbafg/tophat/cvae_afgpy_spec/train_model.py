@@ -172,36 +172,45 @@ def beta_scheduler(beta, epoch, beta0=0., step=50, gamma=0.1):
     else:
         return np.float32(beta)
 
-class Loss:
-    def __init__(self, pars, device, verbose):
-        self.device = device
-        self.verbose = verbose
-        self.pars = pars
-    def __call__(self, x, xhat, mu, logvar, beta):
-        pars = self.pars
+# class Loss:
+#     def __init__(self, pars, device, verbose):
+#         self.device = device
+#         self.verbose = verbose
+#         self.pars = pars
+#     def __call__(self, x, recon_x, mu, logvar, beta):
+#         pars = self.pars
+#
+#
+#
+#         if pars["mse_or_bce"]=="mse":   base = F.mse_loss(recon_x, x.view(-1, recon_x.shape[1]), reduction=pars["reduction"])
+#         elif pars["mse_or_bce"]=="bce": base = F.binary_cross_entropy(recon_x, x.view(-1, recon_x.shape[1]), reduction=pars["reduction"])
+#         else: base = 0
+#
+#         kld_l = -0.5 * torch.sum(1. + logvar - mu.pow(2) - logvar.exp())
+#
+#         if pars["kld_norm"]: kld_l = kld_l / x.shape[0]
+#         if pars["use_beta"]: kld_l *= beta
+#
+#         # loss = base + kld_l
+#
+#
+#         # if self.verbose and not torch.isfinite(base):
+#         #     print(f"Error in base loss value: {loss.item()} base={base.item()} kld_norm={kld_l.item()} beta={beta}")
+#         #     base = torch.tensor(1.e3, dtype=torch.float32).to(self.device)
+#         # if self.verbose and not torch.isfinite(kld_l):
+#         #     print(f"Error in KL loss value: {loss.item()} base={base.item()} kld_norm={kld_l.item()} beta={beta}")
+#         #     kld_l = torch.tensor(1.e3, dtype=torch.float32).to(self.device)
+#
+#         return base + kld_l
 
-
-
-        if pars["mse_or_bce"]=="mse":   base = F.mse_loss(xhat, x, reduction=pars["reduction"])
-        elif pars["mse_or_bce"]=="bce": base = F.binary_cross_entropy(xhat, x, reduction=pars["reduction"])
-        else: base = 0
-
-        kld_l = -0.5 * torch.sum(1. + logvar - mu.pow(2) - logvar.exp())
-
-        if pars["kld_norm"]: kld_l = kld_l / x.shape[0]
-        if pars["use_beta"]: kld_l *= beta
-
-        # loss = base + kld_l
-
-
-        # if self.verbose and not torch.isfinite(base):
-        #     print(f"Error in base loss value: {loss.item()} base={base.item()} kld_norm={kld_l.item()} beta={beta}")
-        #     base = torch.tensor(1.e3, dtype=torch.float32).to(self.device)
-        # if self.verbose and not torch.isfinite(kld_l):
-        #     print(f"Error in KL loss value: {loss.item()} base={base.item()} kld_norm={kld_l.item()} beta={beta}")
-        #     kld_l = torch.tensor(1.e3, dtype=torch.float32).to(self.device)
-
-        return base + kld_l
+def loss_function(recon_x, x, mu, logvar):
+    BCE = F.binary_cross_entropy(recon_x, x.view(-1, recon_x.shape[1]), reduction='sum')
+    # see Appendix B from VAE paper:
+    # Kingma and Welling. Auto-Encoding Variational Bayes. ICLR, 2014
+    # https://arxiv.org/abs/1312.6114
+    # 0.5 * sum(1 + log(sigma^2) - mu^2 - sigma^2)
+    KLD = -0.5 * torch.sum(1 + logvar - mu.pow(2) - logvar.exp())
+    return BCE + KLD
 
 
 def reset_weights(m):
@@ -216,7 +225,7 @@ def reset_weights(m):
 
 
 
-def inference(y_vec:list, model:CVAE, dataset:SpectraDataset, device):
+def OLD_inference(y_vec:list, model:CVAE, dataset:SpectraDataset, device):
     # if len(pars) != model.z_dim:
     #     raise ValueError(f"Number of parameters = {len(pars)} does not match the model latent space size {model.z_dim}")
     # create state vector for intput data (repeat physical parameters for times needed)
@@ -435,7 +444,7 @@ class TrainCVAE:
     def __call__(self, trial:optuna.trial.Trial or None):
         # ------------------------------
         do = self.is_optuna
-        verbose = False
+        verbose = True
         if do: print(f"TRIAL {trial.number}")
         # ------------------------------
 
@@ -445,19 +454,21 @@ class TrainCVAE:
             print("Running on GPU")
         else:
             print("Running on CPU")
-        device="cpu"
+        # device="cpu"
 
         # =================== INIT ===================
         main_pars = {
-            "batch_size":trial.suggest_int("batch_size", low=16, high=128, step=8) if do else 32,
+            "batch_size":trial.suggest_int("batch_size", low=16, high=128, step=8) if do else 8,
             "epochs":150,
             "beta":"step"
         }
 
+        #  feature_size=8192, hidden_dim=400, latent_size=20, class_size=7,
         model_pars = {"name":"CVAE",
-                      "hidden_dim": trial.suggest_int("hidden_dim", low=20, high=1000, step=10) if do else 200,
-                      "z_dim": trial.suggest_int("z_dim", low=4, high=64, step=4) if do else len(self.dataset.feature_names),
-                      "c":len(self.dataset.feature_names),
+                      "feature_size": len(dataset.times) * len(dataset.freqs),
+                      "hidden_dim": trial.suggest_int("hidden_dim", low=20, high=1000, step=10) if do else 400,
+                      "latent_size": trial.suggest_int("latent_size", low=4, high=64, step=4) if do else len(self.dataset.feature_names) ,
+                      "class_size":len(self.dataset.feature_names),
                       "init_weights":True
                       }
         model = select_model(device, copy.deepcopy(model_pars), verbose)
@@ -469,12 +480,12 @@ class TrainCVAE:
             "kld_norm":  trial.suggest_categorical(name="kld_norm",choices=[True,False]) if do else True,
             "use_beta":  trial.suggest_categorical(name="use_beta",choices=[True,False]) if do else True,
         }
-        loss_cvae = Loss(loss_pars, device, verbose=True)
+        loss_cvae = loss_function
 
 
         optimizer_pars = {
             "name":    trial.suggest_categorical(name="optimizer", choices=["Adam", "SGD"]) if do else "Adam",
-            "lr":      trial.suggest_float(name="lr", low=1.e-5, high=1.e-2, log=False) if do else 1.e-2,
+            "lr":      trial.suggest_float(name="lr", low=1.e-5, high=1.e-2, log=False) if do else 1.e-3,
             "momentum":trial.suggest_categorical(name="momentum", choices=[0.0001,0.001,0.01,0.1,0.]) if do else 0.,
             "eps":     trial.suggest_categorical(name="eps", choices=[0.0001,0.001,0.01,0.1,0.]) if do else 0.,
             "weight_decay":trial.suggest_categorical(name="weight_decay", choices=[0.0001,0.001,0.01,0.1,0.]) if do else 0.,
@@ -539,19 +550,19 @@ class TrainCVAE:
             # ------------- Train -------------
             model.train() # set model into training mode
             losses = []
-            for i, (data, label, data_phys, label_phys) in enumerate(train_loader):
+            for i, (x_image, y_label, x_phys, y_phys) in enumerate(train_loader):
                 num_steps += 1
-                data = data.to(device)
-                label = label.to(device)
+                x_image = x_image.to(device)
+                y_label = y_label.to(device)
 
                 optimizer.zero_grad() # Resets the gradients of all optimized tensors
-                xhat, mu, logvar, z = model(data, label) # Forward pass only to get logits/output (evaluate model)
-                if torch.any(torch.isnan(xhat)): # check if nans
+                recon_batch, mu, logvar = model(x_image, y_label) # Forward pass only to get logits/output (evaluate model)
+                if torch.any(torch.isnan(recon_batch)): # check if nans
                     raise optuna.exceptions.TrialPruned()
-                loss = loss_cvae(data, xhat, mu, logvar, beta) # compute/store loss
+                loss = loss_cvae(recon_batch, x_image, mu, logvar) # compute/store loss
                 loss.backward() # computes dloss/dx for every parameter x which has requires_grad=True.
+                losses.append(loss.detach().cpu().numpy())
                 optimizer.step() # perform a single optimization step
-                losses.append(loss.item())
             train_loss['Loss'].append(np.sum(losses)/len(self.dataset.train_sampler))
             if verbose:
                 print(f"\t Train loss: {train_loss['Loss'][-1]:.2e}")
@@ -561,16 +572,16 @@ class TrainCVAE:
             model.eval()
             losses = []
             with torch.no_grad():
-                for i, (data, label, data_phys, label_phys) in enumerate(valid_loader):
-                    data = data.to(device)
-                    label = label.to(device)
-                    xhat, mu, logvar, z = model(data, label) # evaluate model on the data
-                    if torch.any(torch.isnan(xhat)):
+                for i, (x_image, y_label, x_phys, y_phys) in enumerate(valid_loader):
+                    x_image = x_image.to(device)
+                    y_label = y_label.to(device)
+                    recon_batch, mu, logvar = model(x_image, y_label) # evaluate model on the data
+                    if torch.any(torch.isnan(recon_batch)):
                         raise optuna.exceptions.TrialPruned()
-                    loss = loss_cvae(data, xhat, mu, logvar, beta) #  computes dloss/dx requires_grad=False
+                    loss = loss_cvae(recon_batch, x_image, mu, logvar) #  computes dloss/dx requires_grad=False
                     # mse_mean.append(np.sqrt(F.mse_loss(xhat, data, reduction="mean").item()))
                     # mse_sum.append(np.sqrt(F.mse_loss(xhat, data, reduction="sum").item()))
-                    losses.append(loss.item())
+                    losses.append(loss.detach().cpu().numpy())
 
             # all_y = torch.from_numpy(dataset.lcs_log_norm).to(torch.float), # .to(self.device)
             # all_x = torch.from_numpy(dataset.pars_normed).to(torch.float)
@@ -660,11 +671,13 @@ class TrainCVAE:
                 'optimizer_state_dict': optimizer.state_dict(),
                 'train_losses': train_loss,
                 'valid_losses': valid_loss,
+                'model_init':model_pars,
                 'metadata':{
                     "batch_size":main_pars["batch_size"],
                     "beta":beta,
                     "epochs":epochs,
-                    "last_epoch":epoch},
+                    "last_epoch":epoch
+                },
                 "dataset":{
                     "x_transform":"minmax",
                     "y_transform":"log_minmax"
@@ -694,7 +707,13 @@ if __name__ == '__main__':
 
     dataset = SpectraDataset(working_dir)
     dataset.load_and_normalize_data(data_dir=None, limit=None,
-                                    fname_x = "X.h5", fname_y = "Y.h5")
+                                    # fname_x = "X_afgpy.h5", fname_y = "Y_afgpy.h5"
+                                    fname_x = "X.h5", fname_y = "Y.h5"
+                                    )
+    for i in range(dataset.y_norm.shape[1]):
+        print(f"{dataset.feature_names[i]} : "
+              f"[{np.min(dataset.y_norm[:,i])}, {np.max(dataset.y_norm[:,i])}]"
+              f" N_unique = {len(np.unique(dataset.y_norm[:,i]))}")
 
     train = TrainCVAE(dataset, is_optuna=False)
     train(None)

@@ -290,8 +290,8 @@ def select_model(device, pars, verbose):
         print("Let's use", torch.cuda.device_count(), "GPUs!")
         model = nn.DataParallel(model)
 
-    # model.to(device)
-    model = torch.compile(model, backend="aot_eager").to(device)
+    model.to(device)
+    # model = torch.compile(model, backend="aot_eager").to(device)
 
     return model
 
@@ -607,7 +607,7 @@ class Objective:
             print("Running on GPU")
         else:
             print("Running on CPU")
-        # device="cpu"
+        device="cpu"
 
         # =================== INIT ===================
         main_pars = {
@@ -624,6 +624,7 @@ class Objective:
                       "init_weights":True
                       }
         model = select_model(device, copy.deepcopy(model_pars), verbose)
+
         loss_pars = {
             "mse_or_bce":trial.suggest_categorical(name="mse_or_bce",choices=["mse","bce"]) if do else "mse",
             "reduction": trial.suggest_categorical(name="reduction",choices=["sum","mean"]) if do else "sum",
@@ -631,6 +632,7 @@ class Objective:
             "use_beta":  trial.suggest_categorical(name="use_beta",choices=[True,False]) if do else True,
         }
         loss_cvae = Loss(loss_pars, device, verbose=True)
+
         optimizer_pars = {
             "name":    trial.suggest_categorical(name="optimizer", choices=["Adam", "SGD"]) if do else "Adam",
             "lr":      trial.suggest_float(name="lr", low=1.e-5, high=1.e-2, log=False) if do else 1.e-2,
@@ -652,6 +654,7 @@ class Objective:
             # "name":"plateau", "mode":'min', "factor":.5,"verbose":True
         }
         scheduler = select_scheduler(optimizer, copy.deepcopy(scheduler_pars))
+
         early_stopping_pars = {
             "patience":5,
             "verbose":True,
@@ -855,7 +858,7 @@ if __name__ == '__main__':
     study = optuna.create_study(direction="minimize")
                                 # pruner=pruner)
     study.optimize(Objective(dataset),
-                   n_trials=2000,
+                   n_trials=1,
                    callbacks=[lambda study, trial: gc.collect()])
 
     print("Study completed successfully. Saving study")

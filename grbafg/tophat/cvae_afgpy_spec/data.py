@@ -116,7 +116,7 @@ def prepare_dataset_scalers(data_dir=os.getcwd()+'/', out_dir=os.getcwd()+'/',
         f.create_dataset(name="freqs", data=freqs)
 
     # scale parameters (features)
-    scaler_y = preprocessing.MinMaxScaler()
+    scaler_y = preprocessing.MinMaxScaler(feature_range=(0.001,0.999))
     scaler_y.fit(pars)
     fname_y = out_dir+'y_scaler.pkl'
     print(f"Saving...{fname_y}")

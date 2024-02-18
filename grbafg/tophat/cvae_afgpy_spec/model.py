@@ -1,24 +1,24 @@
 import torch
 import torch.nn as nn
 
-class Encoder_1D(nn.Module):
+class Encoder(nn.Module):
     """
     Encoder of the cVAE
     """
 
-    def __init__(self, image_size=150, hidden_dim=50, z_dim=10, c=7):
+    def __init__(self, image_size=150, hidden_dim=50, z_dim=10, class_size=7):
         """
         :param image_size: Size of 1D "images" of data set i.e. spectrum size
         :param hidden_dim: Dimension of hidden layer
         :param z_dim: Dimension of latent space
-        :param c: Dimension of conditioning variables
+        :param class_size: Dimension of conditioning variables
 
         """
         super().__init__()
 
         # nn.Linear(latent_dims, 512)
         self.layers_mu = nn.Sequential(
-            nn.Linear(image_size + c, hidden_dim),
+            nn.Linear(image_size + class_size, hidden_dim),
             nn.Tanh(),
             nn.Linear(hidden_dim, hidden_dim),
             nn.Tanh(),
@@ -26,7 +26,7 @@ class Encoder_1D(nn.Module):
         )
 
         self.layers_logvar = nn.Sequential(
-            nn.Linear(image_size + c, hidden_dim),
+            nn.Linear(image_size + class_size, hidden_dim),
             nn.Tanh(),
             nn.Linear(hidden_dim, hidden_dim),
             nn.Tanh(),
@@ -43,7 +43,7 @@ class Encoder_1D(nn.Module):
         mean = self.layers_mu(x)
         logvar = self.layers_logvar(x)
         return mean, logvar
-class Decoder_1D(nn.Module):
+class Decoder(nn.Module):
     """
     Decoder of cVAE
     """
@@ -69,11 +69,11 @@ class Decoder_1D(nn.Module):
         """
         mean = self.layers(z)
         return mean
-class Kamile_CVAE_1D(nn.Module):
+class CVAE_OLD(nn.Module):
     """
         Base pytorch cVAE class
     """
-    name = "Kamile_CVAE"
+    name = "CVAE"
     def __init__(self, image_size=150, hidden_dim=50, z_dim=10, c=7, init_weights=True, **kwargs):
         """
         :param image_size: Size of 1D "images" of data set i.e. spectrum size
@@ -81,13 +81,13 @@ class Kamile_CVAE_1D(nn.Module):
         :param z_dim: Dimension of latent space (latent_units)
         :param c: Dimension of conditioning variables
         """
-        super(Kamile_CVAE_1D, self).__init__()
+        super(CVAE_OLD, self).__init__()
         self.z_dim = z_dim # needed for inference
         # self.c = c
-        # image_size=image_size
+        self.image_size=image_size
         # self.hidden_dim=hidden_dim
-        self.encoder = Encoder_1D(image_size, hidden_dim, z_dim, c) # self.encoder = Encoder(latent_dims)
-        self.decoder = Decoder_1D(image_size, hidden_dim, z_dim, c) # self.decoder = Decoder(latent_dims)
+        self.encoder = Encoder(image_size, hidden_dim, z_dim, c) # self.encoder = Encoder(latent_dims)
+        self.decoder = Decoder(image_size, hidden_dim, z_dim, c) # self.decoder = Decoder(latent_dims)
 
         if init_weights:
             self.init_weights()
@@ -109,29 +109,39 @@ class Kamile_CVAE_1D(nn.Module):
 
         return cls(**dict)
 
-    def forward(self, y, x):
+    def reparameterize(self, mu, logvar):
+        std = torch.exp(0.5 * logvar)
+        eps = torch.randn_like(std)
+        z = mu + eps * std
+        return z
+
+    def encode(self, x, c):
+        pass
+
+    def decode(self, z, c):
+        pass
+
+    def forward(self, x, c):
         """
         Compute one single pass through decoder and encoder
 
-        :param x: Conditioning variables corresponding to images/spectra
-        :param y: Images/spectra
+        :param c: Conditioning variables corresponding to images/spectra
+        :param x: Images/spectra
         :return: Mean returned by decoder, mean returned by encoder, log variance returned by encoder
         """
 
         # print("1 x={} y={}".format(x.shape, y.shape))
-        y = torch.cat((y, x), dim=1)
-        mean, logvar = self.encoder(y)
+        x = torch.cat((x.view(-1, self.image_size), c), dim=1)
+        mu, logvar = self.encoder(x) # # Q(z|x, c)
         # print(f"2 y={y.shape}")
         # re-parametrize
-        std = torch.exp(0.5 * logvar)
-        eps = torch.randn_like(std)
-        sample = mean + eps * std
+        z = self.reparameterize(mu, logvar)
         # print(f"3 sample={sample.shape}")
-        z = torch.cat((sample, x), dim=1)
+        z = torch.cat((z, c), dim=1)
         # print(f"4 cat(sample,x) -> z={z.shape}")
         mean_dec = self.decoder(z)
         # print(f"5 mean_dec={mean_dec.shape}")
-        return (mean_dec, mean, logvar, z)
+        return (mean_dec, mu, logvar, z)
 
     def init_weights(self):
         """
@@ -148,81 +158,68 @@ class Kamile_CVAE_1D(nn.Module):
             elif 'weight' in name:
                 nn.init.xavier_normal_(param)
 
-import torch
-import torch.nn as nn
-import torch.nn.functional as F
-
-class Encoder(nn.Module):
-    """
-    Encoder of the cVAE for 2D images
-    """
-
-    def __init__(self, image_channels=1, hidden_dim=50, z_dim=10, c=7):
-        """
-        :param image_channels: Number of channels in the 2D images
-        :param hidden_dim: Dimension of hidden layer
-        :param z_dim: Dimension of latent space
-        :param c: Dimension of conditioning variables
-        """
-        super().__init__()
-        self.conv1 = nn.Conv2d(image_channels + c, hidden_dim, kernel_size=4, stride=2, padding=1) # Output: (hidden_dim, 64, 32)
-        self.conv2 = nn.Conv2d(hidden_dim, hidden_dim * 2, kernel_size=4, stride=2, padding=1) # Output: (hidden_dim*2, 32, 16)
-        self.fc_mu = nn.Linear(hidden_dim * 2 * 32 * 16, z_dim)
-        self.fc_logvar = nn.Linear(hidden_dim * 2 * 32 * 16, z_dim)
-
-    def forward(self, x):
-        x = F.relu(self.conv1(x))
-        x = F.relu(self.conv2(x))
-        x = torch.flatten(x, start_dim=1)
-        mean = self.fc_mu(x)
-        logvar = self.fc_logvar(x)
-        return (mean, logvar)
-
-class Decoder(nn.Module):
-    """
-    Decoder of cVAE for 2D images
-    """
-
-    def __init__(self, output_channels=1, hidden_dim=50, z_dim=10, c=7):
-        super().__init__()
-        self.fc = nn.Linear(z_dim + c, hidden_dim * 2 * 32 * 16)
-        self.deconv1 = nn.ConvTranspose2d(hidden_dim * 2, hidden_dim, kernel_size=4, stride=2, padding=1) # Output: (hidden_dim, 64, 32)
-        self.deconv2 = nn.ConvTranspose2d(hidden_dim, output_channels, kernel_size=4, stride=2, padding=1) # Output: (output_channels, 128, 64)
-
-    def forward(self, z):
-        z = F.relu(self.fc(z))
-        z = z.view(-1, 50*2, 32, 16) # Reshape to match the output shape of the encoder
-        z = F.relu(self.deconv1(z))
-        reconstruction = torch.sigmoid(self.deconv2(z))
-        return reconstruction
-
-
-class CVAE(nn.Module):
-    """
-    Base PyTorch cVAE class for 2D images
-    """
+class CVAE_BASIC_OLD(nn.Module):
     name = "CVAE"
-    def __init__(self, hidden_dim=50, z_dim=10, c=7, init_weights=True, **kwargs):
-        super().__init__()
-        self.z_dim = z_dim
-        self.encoder = Encoder(1, hidden_dim, z_dim, c)
-        self.decoder = Decoder(1, hidden_dim, z_dim, c)
+    def __init__(self, feature_size=8192, hidden_dim=400, latent_size=20, class_size=7, init_weights=True, **kwargs):
+        # image_size = 150, hidden_dim = 50, z_dim = 10, c = 7, init_weights = True, ** kwargs
+        super(CVAE, self).__init__()
+        self.feature_size = feature_size
+        self.class_size = class_size
+        self.latent_size = latent_size
+
+        # encode
+        self.fc1  = nn.Linear(feature_size + class_size, hidden_dim)
+        self.fc21 = nn.Linear(hidden_dim, latent_size)
+        self.fc22 = nn.Linear(hidden_dim, latent_size)
+
+        # decode
+        self.fc3 = nn.Linear(latent_size + class_size, hidden_dim)
+        self.fc4 = nn.Linear(hidden_dim, feature_size)
+
+        self.elu = nn.ELU()
+        self.sigmoid = nn.Sigmoid()
 
         if init_weights:
             self.init_weights()
-    @classmethod
-    def init_from_dict(cls, dict : dict):
-        return cls(**dict)
 
-    def forward(self, y, x):
-        y = torch.cat((y, x), dim=1)
-        mean, logvar = self.encoder(y)
-        std = torch.exp(0.5 * logvar)
+    def encode(self, x, c): # Q(z|x, c)
+        '''
+        x: (bs, feature_size)
+        c: (bs, class_size)
+        '''
+        inputs = torch.cat([x, c], 1) # (bs, feature_size+class_size)
+        h1 = self.elu(self.fc1(inputs))
+        z_mu = self.fc21(h1)
+        z_var = self.fc22(h1)
+        if torch.any(torch.isnan(z_mu)):
+            raise ValueError()
+        return (z_mu, z_var)
+
+    def reparameterize(self, mu, logvar):
+        std = torch.exp(0.5*logvar)
         eps = torch.randn_like(std)
-        sample = mean + eps * std
-        z = torch.cat((sample, x), dim=1)
-        mean_dec = self.decoder(z)
-        return (mean_dec, mean, logvar, z)
+        return mu + eps*std
+
+    def decode(self, z, c): # P(x|z, c)
+        '''
+        z: (bs, latent_size)
+        c: (bs, class_size)
+        '''
+        inputs = torch.cat([z, c], 1) # (bs, latent_size+class_size)
+        h3 = self.elu(self.fc3(inputs))
+        return self.sigmoid(self.fc4(h3))
+
+    def forward(self, x, c):
+        if torch.any(torch.isnan(x)):
+            raise ValueError()
+        if torch.any(torch.isnan(c)):
+            raise ValueError()
+        mu, logvar = self.encode(x.view(-1, self.feature_size), c)
+        z = self.reparameterize(mu, logvar)
+        x_recon = self.decode(z, c)
+        if torch.any(torch.isnan(x_recon)):
+            raise ValueError()
+        return (x_recon, mu, logvar)
 
     def init_weights(self):
         """
@@ -238,3 +235,120 @@ class CVAE(nn.Module):
                 nn.init.normal_(param, 0.0)
             elif 'weight' in name:
                 nn.init.xavier_normal_(param)
+
+
+class CVAE(nn.Module):
+    name = "CVAE"
+
+    def __init__(self, feature_size=8192, hidden_dim=400,
+                 latent_size=20, class_size=7, init_weights=True, **kwargs):
+        # image_size = 150, hidden_dim = 50, z_dim = 10, c = 7, init_weights = True, ** kwargs
+        super(CVAE, self).__init__()
+        self.feature_size = feature_size
+        self.class_size = class_size
+        self.latent_size = latent_size
+
+        # encode
+        # self.fc1 = nn.Linear(feature_size + class_size, hidden_dim)
+        # self.fc21 = nn.Linear(hidden_dim, latent_size)
+        # self.fc22 = nn.Linear(hidden_dim, latent_size)
+        self.layers_mu = nn.Sequential(
+            nn.Linear(feature_size + class_size, hidden_dim),
+            nn.Sigmoid(),# nn.Tanh(),
+            nn.Linear(hidden_dim, hidden_dim),
+            nn.Sigmoid(),#nn.Tanh(),
+            nn.Linear(hidden_dim, latent_size),
+        )
+        self.layers_logvar = nn.Sequential(
+            nn.Linear(feature_size + class_size, hidden_dim),
+            nn.Sigmoid(),#nn.Tanh(),
+            nn.Linear(hidden_dim, hidden_dim),
+            nn.Sigmoid(),#nn.Tanh(),
+            nn.Linear(hidden_dim, latent_size),
+        )
+
+        # decode
+        # self.fc3 = nn.Linear(latent_size + class_size, hidden_dim)
+        # self.fc4 = nn.Linear(hidden_dim, feature_size)
+        self.layers = nn.Sequential(
+            nn.Linear(latent_size + class_size, hidden_dim),
+            nn.Tanh(),
+            nn.Linear(hidden_dim, hidden_dim),
+            nn.Tanh(),
+            nn.Linear(hidden_dim, feature_size),
+            nn.Sigmoid(),
+        )
+
+        # self.elu = nn.ELU()
+        # self.sigmoid = nn.Sigmoid()
+
+        if init_weights:
+            self.init_weights()
+
+    def encode(self, x, c):  # Q(z|x, c)
+        '''
+        x: (bs, feature_size)
+        c: (bs, class_size)
+        '''
+        inputs = torch.cat([x, c], 1)  # (bs, feature_size+class_size)
+        # h1 = self.elu(self.fc1(inputs))
+        # z_mu = self.fc21(h1)
+        # z_var = self.fc22(h1)
+        # if torch.any(torch.isnan(z_mu)):
+        #     raise ValueError()
+        z_mu = self.layers_mu(inputs)
+        z_var = self.layers_logvar(inputs)
+        return (z_mu, z_var)
+
+    def reparameterize(self, mu, logvar):
+        std = torch.exp(0.5 * logvar)
+        eps = torch.randn_like(std)
+        return mu + eps * std
+
+    def decode(self, z, c):  # P(x|z, c)
+        '''
+        z: (bs, latent_size)
+        c: (bs, class_size)
+        '''
+        inputs = torch.cat([z, c], 1)  # (bs, latent_size+class_size)
+        # h3 = self.elu(self.fc3(inputs))
+        # return self.sigmoid(self.fc4(h3))
+        x_reconstruct = self.layers(inputs)
+        return x_reconstruct
+
+    def forward(self, x, c):
+        if torch.any(torch.isnan(x)):
+            raise ValueError()
+        if torch.any(torch.isnan(c)):
+            raise ValueError()
+        mu, logvar = self.encode(x.view(-1, self.feature_size), c)
+        z = self.reparameterize(mu, logvar)
+        x_recon = self.decode(z, c)
+        if torch.any(torch.isnan(x_recon)):
+            raise ValueError()
+        return (x_recon, mu, logvar)
+
+    def init_weights(self):
+        """
+            Initialize weight of recurrent layers
+        """
+        for name, param in self.named_parameters():
+            if 'bias' in name:
+                nn.init.normal_(param, 0.0)
+            elif 'weight' in name:
+                nn.init.xavier_normal_(param)
+        # for name, param in self.named_parameters():
+        #     if 'bias' in name:
+        #         nn.init.normal_(param, 0.0)
+        #     elif 'weight' in name:
+        #         nn.init.xavier_normal_(param)
+
+
+def load_model(model_dir, model_metada, device):
+    """ loads the model (eval mode) with all dictionaries """
+    model = CVAE.init_from_dict(model_metada)
+    state = torch.load(model_dir+"model.pt", map_location=device)
+    model.load_state_dict(state["model_state_dict"])
+    model.eval()
+    model.to(device)
+    return (model, state)
