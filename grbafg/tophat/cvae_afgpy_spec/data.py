@@ -198,13 +198,18 @@ class SpectraDataset(Dataset):
             self.freqs = np.array(f["freqs"])
 
 
-    def load_and_normalize_data(self, data_dir=None or str, limit=None, fname_x = "X_afgpy.h5", fname_y = "Y_afgpy.h5"):
+    def load_and_normalize_data(self, data_dir=None or str, limit=None,
+                                fname_x = "X_afgpy.h5", fname_y = "Y_afgpy.h5",
+                                add_color_channel=False):
         if data_dir is None: data_dir = self.working_dir
         # Load Prepared data
         with h5py.File(data_dir+fname_x,"r") as f:
             self.X = np.array(f["X"]) if limit is None else np.array(f["X"])[:limit] # spectra [i_example, i_time, i_freq]
             self.times = np.array(f["times"])
             self.freqs = np.array(f["freqs"])
+            if add_color_channel:
+                # add color channel for grayscale image
+                self.X = np.expand_dims(self.X, axis=1)
         with h5py.File(data_dir+fname_y,"r") as f:
             self.y = np.array(f["Y"]) if limit is None else np.array(f["Y"])[:limit] # labels [i_example, i_label]
         if not limit is None:

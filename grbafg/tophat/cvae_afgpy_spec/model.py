@@ -237,13 +237,13 @@ class CVAE_BASIC_OLD(nn.Module):
                 nn.init.xavier_normal_(param)
 
 
-class CVAE(nn.Module):
+class CVAE_(nn.Module):
     name = "CVAE"
 
     def __init__(self, feature_size=8192, hidden_dim=400,
                  latent_size=20, class_size=7, init_weights=True, **kwargs):
         # image_size = 150, hidden_dim = 50, z_dim = 10, c = 7, init_weights = True, ** kwargs
-        super(CVAE, self).__init__()
+        super(CVAE_, self).__init__()
         self.feature_size = feature_size
         self.class_size = class_size
         self.latent_size = latent_size
@@ -253,29 +253,38 @@ class CVAE(nn.Module):
         # self.fc21 = nn.Linear(hidden_dim, latent_size)
         # self.fc22 = nn.Linear(hidden_dim, latent_size)
         self.layers_mu = nn.Sequential(
-            nn.Linear(feature_size + class_size, hidden_dim),
-            nn.Sigmoid(),# nn.Tanh(),
-            nn.Linear(hidden_dim, hidden_dim),
-            nn.Sigmoid(),#nn.Tanh(),
-            nn.Linear(hidden_dim, latent_size),
+            nn.Linear(in_features=feature_size + class_size,
+                      out_features=hidden_dim),
+            nn.LeakyReLU(),# nn.Tanh(),
+            nn.Linear(in_features=hidden_dim,
+                      out_features=hidden_dim),
+            nn.LeakyReLU(),#nn.Tanh(),
+            nn.Linear(in_features=hidden_dim,
+                      out_features=latent_size),
         )
         self.layers_logvar = nn.Sequential(
-            nn.Linear(feature_size + class_size, hidden_dim),
-            nn.Sigmoid(),#nn.Tanh(),
-            nn.Linear(hidden_dim, hidden_dim),
-            nn.Sigmoid(),#nn.Tanh(),
-            nn.Linear(hidden_dim, latent_size),
+            nn.Linear(in_features=feature_size + class_size,
+                      out_features=hidden_dim),
+            nn.LeakyReLU(),#nn.Tanh(),
+            nn.Linear(in_features=hidden_dim,
+                      out_features=hidden_dim),
+            nn.LeakyReLU(),#nn.Tanh(),
+            nn.Linear(in_features=hidden_dim,
+                      out_features=latent_size),
         )
 
         # decode
         # self.fc3 = nn.Linear(latent_size + class_size, hidden_dim)
         # self.fc4 = nn.Linear(hidden_dim, feature_size)
         self.layers = nn.Sequential(
-            nn.Linear(latent_size + class_size, hidden_dim),
-            nn.Tanh(),
-            nn.Linear(hidden_dim, hidden_dim),
-            nn.Tanh(),
-            nn.Linear(hidden_dim, feature_size),
+            nn.Linear(in_features=latent_size + class_size,
+                      out_features=hidden_dim),
+            nn.LeakyReLU(),
+            nn.Linear(in_features=hidden_dim,
+                      out_features=hidden_dim),
+            nn.LeakyReLU(),
+            nn.Linear(in_features=hidden_dim,
+                      out_features=feature_size),
             nn.Sigmoid(),
         )
 
@@ -343,6 +352,124 @@ class CVAE(nn.Module):
         #     elif 'weight' in name:
         #         nn.init.xavier_normal_(param)
 
+class CVAE(nn.Module):
+    name = "CVAE"
+
+    def __init__(self, feature_size=8192, hidden_dim=400,
+                 latent_size=20, class_size=7, init_weights=True, **kwargs):
+        # image_size = 150, hidden_dim = 50, z_dim = 10, c = 7, init_weights = True, ** kwargs
+        super(CVAE, self).__init__()
+        self.feature_size = feature_size
+        self.class_size = class_size
+        self.latent_size = latent_size
+
+        # encode
+        # self.fc1 = nn.Linear(feature_size + class_size, hidden_dim)
+        # self.fc21 = nn.Linear(hidden_dim, latent_size)
+        # self.fc22 = nn.Linear(hidden_dim, latent_size)
+        self.layers_mu = nn.Sequential(
+            # nn.Linear(in_features=feature_size + class_size,
+            #           out_features=hidden_dim),
+            # nn.LeakyReLU(),# nn.Tanh(),
+            # nn.Linear(in_features=hidden_dim,
+            #           out_features=hidden_dim),
+            # nn.LeakyReLU(),#nn.Tanh(),
+            # nn.Linear(in_features=hidden_dim,
+            #           out_features=latent_size),
+            nn.Conv2d(in_channels=1,out_channels=16,kernel_size=5,stride=1,padding=0),
+            nn.Conv2d(in_channels=16, out_channels=16, kernel_size=5, stride=1, padding=0),
+            nn.Linear(in_features=feature_size,
+                      out_features=latent_size)
+        )
+        self.layers_logvar = nn.Sequential(
+            nn.Linear(in_features=feature_size + class_size,
+                      out_features=hidden_dim),
+            nn.LeakyReLU(),#nn.Tanh(),
+            nn.Linear(in_features=hidden_dim,
+                      out_features=hidden_dim),
+            nn.LeakyReLU(),#nn.Tanh(),
+            nn.Linear(in_features=hidden_dim,
+                      out_features=latent_size),
+        )
+
+        # decode
+        # self.fc3 = nn.Linear(latent_size + class_size, hidden_dim)
+        # self.fc4 = nn.Linear(hidden_dim, feature_size)
+        self.layers = nn.Sequential(
+            nn.Linear(in_features=latent_size + class_size,
+                      out_features=hidden_dim),
+            nn.LeakyReLU(),
+            nn.Linear(in_features=hidden_dim,
+                      out_features=hidden_dim),
+            nn.LeakyReLU(),
+            nn.Linear(in_features=hidden_dim,
+                      out_features=feature_size),
+            nn.Sigmoid(),
+        )
+
+        # self.elu = nn.ELU()
+        # self.sigmoid = nn.Sigmoid()
+
+        if init_weights:
+            self.init_weights()
+
+    def encode(self, x, c):  # Q(z|x, c)
+        '''
+        x: (bs, feature_size)
+        c: (bs, class_size)
+        '''
+        inputs = torch.cat([x, c], 1)  # (bs, feature_size+class_size)
+        # h1 = self.elu(self.fc1(inputs))
+        # z_mu = self.fc21(h1)
+        # z_var = self.fc22(h1)
+        # if torch.any(torch.isnan(z_mu)):
+        #     raise ValueError()
+        z_mu = self.layers_mu(inputs)
+        z_var = self.layers_logvar(inputs)
+        return (z_mu, z_var)
+
+    def reparameterize(self, mu, logvar):
+        std = torch.exp(0.5 * logvar)
+        eps = torch.randn_like(std)
+        return mu + eps * std
+
+    def decode(self, z, c):  # P(x|z, c)
+        '''
+        z: (bs, latent_size)
+        c: (bs, class_size)
+        '''
+        inputs = torch.cat([z, c], 1)  # (bs, latent_size+class_size)
+        # h3 = self.elu(self.fc3(inputs))
+        # return self.sigmoid(self.fc4(h3))
+        x_reconstruct = self.layers(inputs)
+        return x_reconstruct
+
+    def forward(self, x, c):
+        if torch.any(torch.isnan(x)):
+            raise ValueError()
+        if torch.any(torch.isnan(c)):
+            raise ValueError()
+        mu, logvar = self.encode(x.view(-1, self.feature_size), c)
+        z = self.reparameterize(mu, logvar)
+        x_recon = self.decode(z, c)
+        if torch.any(torch.isnan(x_recon)):
+            raise ValueError()
+        return (x_recon, mu, logvar)
+
+    def init_weights(self):
+        """
+            Initialize weight of recurrent layers
+        """
+        for name, param in self.named_parameters():
+            if 'bias' in name:
+                nn.init.normal_(param, 0.0)
+            elif 'weight' in name:
+                nn.init.xavier_normal_(param)
+        # for name, param in self.named_parameters():
+        #     if 'bias' in name:
+        #         nn.init.normal_(param, 0.0)
+        #     elif 'weight' in name:
+        #         nn.init.xavier_normal_(param)
 
 def load_model(model_dir, model_metada, device):
     """ loads the model (eval mode) with all dictionaries """

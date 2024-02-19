@@ -552,11 +552,8 @@ class TrainCVAE:
             losses = []
             for i, (x_image, y_label, x_phys, y_phys) in enumerate(train_loader):
                 num_steps += 1
-                x_image = x_image.to(device)
-                y_label = y_label.to(device)
-
                 optimizer.zero_grad() # Resets the gradients of all optimized tensors
-                recon_batch, mu, logvar = model(x_image, y_label) # Forward pass only to get logits/output (evaluate model)
+                recon_batch, mu, logvar = model(x_image.to(device), y_label.to(device)) # Forward pass only to get logits/output (evaluate model)
                 if torch.any(torch.isnan(recon_batch)): # check if nans
                     raise optuna.exceptions.TrialPruned()
                 loss = loss_cvae(recon_batch, x_image, mu, logvar) # compute/store loss
